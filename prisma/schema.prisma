@@ -1,0 +1,334 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ──────────────────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  OPERATIVE
+}
+
+enum FaultStatus {
+  CREATED
+  ASSIGNED_TO_OPERATIVE
+  OPERATIVE_SUBMITTED
+  REJECTED
+  REASSIGNED
+  ADMIN_SUBMITTED
+  COMPLETED
+}
+
+enum PunchEventType {
+  PUNCH_IN
+  REACHED
+  WORK_DONE
+  PUNCH_OUT
+}
+
+// ─── USERS ──────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name          String
+  email         String    @unique
+  passwordHash  String    @map("password_hash")
+  role          UserRole
+  adminId       String?   @map("admin_id") @db.Uuid
+  companyName   String?   @map("company_name")
+  emailVerified Boolean   @default(false) @map("email_verified")
+  isActive      Boolean   @default(true) @map("is_active")
+  lastLoginAt   DateTime? @map("last_login_at") @db.Timestamptz()
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
+
+  // Self-referencing: admin → operatives
+  admin      User?  @relation("AdminOperatives", fields: [adminId], references: [id])
+  operatives User[] @relation("AdminOperatives")
+
+  // Faults relations
+  adminFaults             Fault[] @relation("AdminFaults")
+  createdFaults           Fault[] @relation("FaultCreator")
+  operativeAssignedFaults Fault[] @relation("FaultOperative")
+
+  // Other relations
+  refreshTokens            RefreshToken[]
+  passwordResetTokens      PasswordResetToken[]
+  emailVerificationTokens  EmailVerificationToken[]
+  faultAuditLogs           FaultAuditLog[]
+  auditLogs                AuditLog[]
+  eodReports               EodReport[]
+
+  requestedDeletions DataDeletionRequest[] @relation("DeletionRequester")
+  targetedDeletions  DataDeletionRequest[] @relation("DeletionTarget")
+  processedDeletions DataDeletionRequest[] @relation("DeletionProcessor")
+
+  @@map("users")
+}
+
+// ─── FAULTS ─────────────────────────────────────────────────────────
+
+model Fault {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  adminId   String @map("admin_id") @db.Uuid
+
+  // Primary display ID (was citadelRef / CITADEL Ref)
+  clientRef  String  @unique @map("client_ref")
+  companyRef String? @map("company_ref") // was ckRef
+
+  // Fault info
+  title       String
+  workType    String? @map("work_type")
+  description String?
+
+  // Location
+  locationText String? @map("location_text")
+  locationLat  Float?  @map("location_lat")
+  locationLng  Float?  @map("location_lng")
+
+  // Scheduling
+  timeAllocated     DateTime? @map("time_allocated") @db.Timestamptz()
+  plannedArrival    DateTime? @map("planned_arrival") @db.Timestamptz()
+  plannedCompletion DateTime? @map("planned_completion") @db.Timestamptz()
+  priority          String? // "2h" | "24h" | "7d" | "28d" | "Planned" | "Project"
+
+  // Onsite Contact
+  onsiteContactName  String? @map("onsite_contact_name")
+  onsiteContactPhone String? @map("onsite_contact_phone")
+  onsiteContactEmail String? @map("onsite_contact_email")
+
+  // Visit Requirements
+  visitTaskBriefing      Boolean @default(false) @map("visit_task_briefing")
+  visitLsr               Boolean @default(false) @map("visit_lsr")
+  visitLinkBlock         Boolean @default(false) @map("visit_link_block")
+  visitSafeWorkPack      Boolean @default(false) @map("visit_safe_work_pack")
+  visitPossession        Boolean @default(false) @map("visit_possession")
+  visitTempWorks         Boolean @default(false) @map("visit_temp_works")
+  visitIsolation         Boolean @default(false) @map("visit_isolation")
+  visitTrackAccess       Boolean @default(false) @map("visit_track_access")
+  visitTempWorksRequired Boolean @default(false) @map("visit_temp_works_required")
+  visitWorkingAtHeight   Boolean @default(false) @map("visit_working_at_height")
+
+  // Contractor Details
+  contractorCompany String? @map("contractor_company")
+  contractorName    String? @map("contractor_name")
+  contractorEmail   String? @map("contractor_email")
+  contractorMobile  String? @map("contractor_mobile")
+
+  // Operative-filled fields
+  supervisorNames  String?  @map("supervisor_names")
+  operativeName    String?  @map("operative_name")
+  materialsUsed    Json?    @map("materials_used") @db.JsonB // [{item, qty, unit}]
+  methodology      String?
+  worksDescription String?  @map("works_description")
+  dimensions       Json?    @db.JsonB // [{activity, qty, unit}]
+  furtherWork      Boolean? @map("further_work")
+  furtherWorkNotes String?  @map("further_work_notes")
+
+  // Status & Ownership
+  status               FaultStatus @default(CREATED)
+  createdBy            String      @map("created_by") @db.Uuid
+  assignedOperativeId  String?     @map("assigned_operative_id") @db.Uuid
+  faultDate            DateTime    @default(dbgenerated("CURRENT_DATE")) @map("fault_date") @db.Date
+  operativeSubmittedAt DateTime?   @map("operative_submitted_at") @db.Timestamptz()
+  adminSubmittedAt     DateTime?   @map("admin_submitted_at") @db.Timestamptz()
+  completedAt          DateTime?   @map("completed_at") @db.Timestamptz()
+  rejectionNote        String?     @map("rejection_note")
+  createdAt            DateTime    @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt            DateTime    @updatedAt @map("updated_at") @db.Timestamptz()
+
+  // Relations
+  admin             User            @relation("AdminFaults", fields: [adminId], references: [id])
+  creator           User            @relation("FaultCreator", fields: [createdBy], references: [id])
+  assignedOperative User?           @relation("FaultOperative", fields: [assignedOperativeId], references: [id])
+  photos            FaultPhoto[]
+  auditLog          FaultAuditLog[]
+  eodReports        EodReport[]
+  workDays          WorkDay[]
+
+  @@map("faults")
+}
+
+// ─── WORK DAYS (GPS Attendance) ─────────────────────────────────────
+
+model WorkDay {
+  id        String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  faultId   String  @map("fault_id") @db.Uuid
+  dayNumber Int     @map("day_number")
+  isLocked  Boolean @default(false) @map("is_locked")
+
+  // Per-day operative report fields
+  supervisorNames  String?  @map("supervisor_names")
+  tradespersonNames String? @map("tradesperson_names")
+  operativeName    String?  @map("operative_name")
+  materialsUsed    Json?    @map("materials_used") @db.JsonB
+  methodology      String?
+  worksDescription String?  @map("works_description")
+  dimensions       Json?    @db.JsonB
+  furtherWork      Boolean? @map("further_work")
+  furtherWorkNotes String?  @map("further_work_notes")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  fault  Fault        @relation(fields: [faultId], references: [id], onDelete: Cascade)
+  events PunchEvent[]
+  photos FaultPhoto[]
+
+  @@unique([faultId, dayNumber])
+  @@map("work_days")
+}
+
+model PunchEvent {
+  id        String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workDayId String         @map("work_day_id") @db.Uuid
+  eventType PunchEventType @map("event_type")
+  timestamp DateTime       @default(now()) @db.Timestamptz()
+  lat       Float
+  lng       Float
+
+  workDay WorkDay @relation(fields: [workDayId], references: [id], onDelete: Cascade)
+
+  @@map("punch_events")
+}
+
+// ─── FAULT PHOTOS ───────────────────────────────────────────────────
+
+model FaultPhoto {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  faultId       String    @map("fault_id") @db.Uuid
+  workDayId     String?   @map("work_day_id") @db.Uuid
+  r2Key         String    @map("r2_key")
+  photoStage    String    @map("photo_stage") // 'before' | 'during' | 'after'
+  fileName      String?   @map("file_name")
+  fileSizeBytes Int?      @map("file_size_bytes")
+  deletedAt     DateTime? @map("deleted_at") @db.Timestamptz()
+  uploadedAt    DateTime  @default(now()) @map("uploaded_at") @db.Timestamptz()
+
+  fault   Fault    @relation(fields: [faultId], references: [id], onDelete: Cascade)
+  workDay WorkDay? @relation(fields: [workDayId], references: [id], onDelete: SetNull)
+
+  @@map("fault_photos")
+}
+
+// ─── FAULT AUDIT LOG ────────────────────────────────────────────────
+
+model FaultAuditLog {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  faultId    String   @map("fault_id") @db.Uuid
+  changedBy  String   @map("changed_by") @db.Uuid
+  changeType String   @map("change_type")
+  oldValue   Json?    @map("old_value") @db.JsonB
+  newValue   Json?    @map("new_value") @db.JsonB
+  changedAt  DateTime @default(now()) @map("changed_at") @db.Timestamptz()
+
+  fault Fault @relation(fields: [faultId], references: [id])
+  user  User  @relation(fields: [changedBy], references: [id])
+
+  @@map("fault_audit_log")
+}
+
+// ─── REFRESH TOKENS ─────────────────────────────────────────────────
+
+model RefreshToken {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  token     String
+  isRevoked Boolean  @default(false) @map("is_revoked")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz()
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+// ─── PASSWORD RESET TOKENS ──────────────────────────────────────────
+
+model PasswordResetToken {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz()
+  usedAt    DateTime? @map("used_at") @db.Timestamptz()
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_reset_tokens")
+}
+
+// ─── EMAIL VERIFICATION TOKENS ──────────────────────────────────────
+
+model EmailVerificationToken {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz()
+  usedAt    DateTime? @map("used_at") @db.Timestamptz()
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_verification_tokens")
+}
+
+// ─── EOD REPORTS ────────────────────────────────────────────────────
+
+model EodReport {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  faultId   String    @map("fault_id") @db.Uuid
+  adminId   String    @map("admin_id") @db.Uuid
+  pdfR2Key  String?   @map("pdf_r2_key")
+  sentAt    DateTime? @map("sent_at") @db.Timestamptz()
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  fault Fault @relation(fields: [faultId], references: [id])
+  admin User  @relation(fields: [adminId], references: [id])
+
+  @@map("eod_reports")
+}
+
+// ─── AUDIT LOGS (system-wide) ───────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     String?  @map("user_id") @db.Uuid
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id") @db.Uuid
+  oldValue   Json?    @map("old_value") @db.JsonB
+  newValue   Json?    @map("new_value") @db.JsonB
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
+
+// ─── DATA DELETION REQUESTS (UK GDPR Article 17) ───────────────────
+
+model DataDeletionRequest {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  requestedBy  String    @map("requested_by") @db.Uuid
+  targetUserId String    @map("target_user_id") @db.Uuid
+  reason       String?
+  status       String    @default("PENDING")
+  processedBy  String?   @map("processed_by") @db.Uuid
+  processedAt  DateTime? @map("processed_at") @db.Timestamptz()
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+
+  requester User  @relation("DeletionRequester", fields: [requestedBy], references: [id])
+  target    User  @relation("DeletionTarget", fields: [targetUserId], references: [id])
+  processor User? @relation("DeletionProcessor", fields: [processedBy], references: [id])
+
+  @@map("data_deletion_requests")
+}
