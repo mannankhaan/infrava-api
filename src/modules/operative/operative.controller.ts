@@ -141,8 +141,8 @@ export async function presignPhoto(req: AuthRequest, res: Response): Promise<voi
   const existingCount = await prisma.faultPhoto.count({
     where: { faultId: req.params.id as string, photoStage, deletedAt: null },
   });
-  if (existingCount >= 2) {
-    res.status(400).json({ success: false, error: `Maximum 2 ${photoStage} photos allowed` });
+  if (existingCount >= 10) {
+    res.status(400).json({ success: false, error: `Maximum 10 ${photoStage} photos allowed` });
     return;
   }
 
