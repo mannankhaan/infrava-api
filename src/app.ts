@@ -18,7 +18,12 @@ const app = express();
 // Security
 app.use(helmet());
 app.use(cors({
-  origin: env.APP_URL,
+  origin: [
+    env.APP_URL,
+    'http://192.168.1.10:3000', // TODO: remove after deployment — local dev only
+    'capacitor://localhost',   // iOS native app — keep in production
+    'https://localhost',       // Android native app (androidScheme: 'https') — keep in production
+  ],
   credentials: true,
 }));
 

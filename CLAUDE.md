@@ -100,3 +100,4 @@ Schema is at `prisma/schema.prisma`. Key models: `User`, `Fault`, `WorkDay`, `Pu
 - **File uploads**: Multer with 10MB limit. Photos go to R2 via presigned URLs. DOCX files are parsed server-side.
 - **Punch events**: Exactly 4 per work day in sequence: `PUNCH_IN → REACHED → WORK_DONE → PUNCH_OUT`. After `PUNCH_OUT`, the work day is locked (`isLocked = true`).
 - **findOrCreateUser.ts**: Creates operative accounts on first fault assignment. Generates temp password and sends welcome email. Enforces one-admin-per-operative.
+- **CORS**: Allows `capacitor://localhost` (iOS native) and `https://localhost` (Android native) in addition to `APP_URL`. Do not remove these — the mobile Capacitor app depends on them. The local dev IP (`http://192.168.1.10:3000`) is also listed — **remove it before deploying to production**.
