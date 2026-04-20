@@ -20,7 +20,7 @@ import {
   createFaultSchema, updateFaultSchema,
   assignOperativeSchema, reassignSchema, rejectSchema,
   createOperativeSchema, updateOperativeSchema,
-  processDeletionSchema,
+  processDeletionSchema, adminPresignPhotoSchema,
 } from './admin.schemas';
 import * as ctrl from './admin.controller';
 
@@ -33,6 +33,7 @@ router.use(authMiddleware, requireRoles([UserRole.ADMIN]));
 router.post('/faults/parse-docx', upload.single('file'), ctrl.parseDocx);
 
 // Fault CRUD
+router.post('/faults/photos/presign', validate(adminPresignPhotoSchema), ctrl.adminPresignPhoto);
 router.post('/faults', validate(createFaultSchema), ctrl.createFault);
 router.get('/faults', ctrl.listFaults);
 router.get('/faults/:id', ctrl.getFault);
