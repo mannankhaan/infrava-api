@@ -1,9 +1,20 @@
-import { Resend } from 'resend';
+import nodemailer from 'nodemailer';
 import { env } from '../../config/env';
 
-const resend = env.RESEND_API_KEY ? new Resend(env.RESEND_API_KEY) : null;
+const FROM_EMAIL = env.EMAIL_USER ? `Infrava <${env.EMAIL_USER}>` : 'Infrava <noreply@infrava.co.in>';
 
-const FROM_EMAIL = 'Infrava <noreply@infrava.co.in>';
+const transporter = nodemailer.createTransport({
+  host: env.EMAIL_HOST,
+  port: env.EMAIL_PORT,
+  secure: env.EMAIL_PORT === 465, // true for 465, false for other ports
+  auth: {
+    user: env.EMAIL_USER,
+    pass: env.EMAIL_PASS,
+  },
+  tls: {
+    ciphers: 'SSLv3'
+  }
+});
 
 interface SendEmailOptions {
   to: string;
@@ -14,9 +25,9 @@ interface SendEmailOptions {
 /* ── Base email sender ─────────────────────────────────────── */
 
 export async function sendEmail(options: SendEmailOptions): Promise<void> {
-  if (resend) {
+  if (env.EMAIL_USER && env.EMAIL_PASS) {
     try {
-      await resend.emails.send({
+      await transporter.sendMail({
         from: FROM_EMAIL,
         to: options.to,
         subject: options.subject,

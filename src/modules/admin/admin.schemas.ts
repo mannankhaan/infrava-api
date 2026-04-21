@@ -30,6 +30,13 @@ export const createFaultSchema = z.object({
   contractorName: z.string().optional(),
   contractorEmail: z.string().optional(),
   contractorMobile: z.string().optional(),
+  photos: z.array(
+    z.object({
+      r2Key: z.string(),
+      fileName: z.string().optional(),
+      fileSizeBytes: z.number().optional(),
+    })
+  ).optional(),
 });
 
 export const updateFaultSchema = createFaultSchema.partial();
@@ -64,6 +71,11 @@ export const processDeletionSchema = z.object({
   note: z.string().optional(),
 });
 
+export const adminPresignPhotoSchema = z.object({
+  contentType: z.string().min(1, 'Content type required'),
+  fileName: z.string().optional(),
+});
+
 export type CreateFaultInput = z.infer<typeof createFaultSchema>;
 export type UpdateFaultInput = z.infer<typeof updateFaultSchema>;
 export type AssignOperativeInput = z.infer<typeof assignOperativeSchema>;
@@ -72,6 +84,7 @@ export type RejectInput = z.infer<typeof rejectSchema>;
 export type CreateOperativeInput = z.infer<typeof createOperativeSchema>;
 export type UpdateOperativeInput = z.infer<typeof updateOperativeSchema>;
 export type ProcessDeletionInput = z.infer<typeof processDeletionSchema>;
+export type AdminPresignPhotoInput = z.infer<typeof adminPresignPhotoSchema>;
 
 // ─── Quotations ─────────────────────────────────────────────────────
 

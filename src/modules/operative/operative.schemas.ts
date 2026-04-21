@@ -25,14 +25,14 @@ export const updateFaultSchema = z.object({
 
 export const registerPhotoSchema = z.object({
   r2Key: z.string().min(1),
-  photoStage: z.enum(['before', 'during', 'after']),
+  photoStage: z.enum(['before', 'during', 'after', 'BEFORE', 'DURING', 'AFTER']).transform((val) => val.toLowerCase() as 'before' | 'during' | 'after'),
   fileName: z.string().optional(),
   fileSizeBytes: z.number().optional(),
-  workDayId: z.string().uuid().optional(),
+  workDayId: z.string().uuid().optional().or(z.literal('')).or(z.null()),
 });
 
 export const presignPhotoSchema = z.object({
-  photoStage: z.enum(['before', 'during', 'after']),
+  photoStage: z.enum(['before', 'during', 'after', 'BEFORE', 'DURING', 'AFTER']).transform((val) => val.toLowerCase() as 'before' | 'during' | 'after'),
   fileName: z.string().min(1),
   contentType: z.string().min(1),
 });

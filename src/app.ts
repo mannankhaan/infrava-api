@@ -9,6 +9,7 @@ import authRoutes from './modules/auth/auth.routes';
 import adminRoutes from './modules/admin/admin.routes';
 import operativeRoutes from './modules/operative/operative.routes';
 import internalRoutes from './modules/internal/internal.routes';
+import photosRoutes from './modules/photos/photos.routes';
 
 // Middleware
 import { auditMiddleware } from './shared/middleware/audit.middleware';
@@ -16,7 +17,9 @@ import { auditMiddleware } from './shared/middleware/audit.middleware';
 const app = express();
 
 // Security
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: false, // Allow loading images from different origins (R2)
+}));
 app.use(cors({
   origin: [
     env.APP_URL,
@@ -45,6 +48,7 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/operative', operativeRoutes);
 app.use('/api/v1/internal', internalRoutes);
+app.use('/api/v1/photos', photosRoutes);
 
 // 404
 app.use((_req, res) => {

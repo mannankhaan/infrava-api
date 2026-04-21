@@ -12,9 +12,10 @@ import {
   AssignOperativeInput, ReassignInput, RejectInput,
   CreateOperativeInput, UpdateOperativeInput,
   CreateFaultInput, UpdateFaultInput as AdminUpdateFaultInput,
-  ProcessDeletionInput,
+  ProcessDeletionInput, AdminPresignPhotoInput,
   CreateQuotationInput, UpdateQuotationInput,
 } from './admin.schemas';
+import { getPresignedUploadUrl } from '../../shared/services/storage.service';
 
 // ─── Fault CRUD ─────────────────────────────────────────────────────
 
@@ -61,6 +62,16 @@ export async function createFault(req: AuthRequest, res: Response): Promise<void
       contractorName: input.contractorName,
       contractorEmail: input.contractorEmail,
       contractorMobile: input.contractorMobile,
+      ...(input.photos && input.photos.length > 0 ? {
+        photos: {
+          create: input.photos.map(p => ({
+            r2Key: p.r2Key,
+            fileName: p.fileName,
+            fileSizeBytes: p.fileSizeBytes,
+            photoStage: 'before'
+          }))
+        }
+      } : {}),
     },
   });
 
@@ -175,6 +186,15 @@ export async function deleteFault(req: AuthRequest, res: Response): Promise<void
 
   await prisma.fault.delete({ where: { id: faultId } });
   res.json({ success: true, data: { message: 'Fault deleted' } });
+}
+
+export async function adminPresignPhoto(req: AuthRequest, res: Response): Promise<void> {
+  const { contentType, fileName } = req.body as AdminPresignPhotoInput;
+  const uniqueId = `file_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+  const cleanName = fileName ? fileName.replace(/[^a-zA-Z0-9.-]/g, '_') : 'upload';
+  const r2Key = `admin-faults/${uniqueId}-${cleanName}`;
+  const { url } = await getPresignedUploadUrl(r2Key, contentType);
+  res.json({ success: true, data: { uploadUrl: url, r2Key } });
 }
 
 // ─── DOCX Parse ─────────────────────────────────────────────────────
