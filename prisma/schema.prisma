@@ -31,6 +31,11 @@ enum PunchEventType {
   PUNCH_OUT
 }
 
+enum QuotationStatus {
+  DRAFT
+  FINAL
+}
+
 // ─── USERS ──────────────────────────────────────────────────────────
 
 model User {
@@ -42,6 +47,7 @@ model User {
   adminId       String?   @map("admin_id") @db.Uuid
   companyName   String?   @map("company_name")
   emailVerified Boolean   @default(false) @map("email_verified")
+  avatarUrl     String?   @map("avatar_url")
   isActive      Boolean   @default(true) @map("is_active")
   lastLoginAt   DateTime? @map("last_login_at") @db.Timestamptz()
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
@@ -67,6 +73,8 @@ model User {
   requestedDeletions DataDeletionRequest[] @relation("DeletionRequester")
   targetedDeletions  DataDeletionRequest[] @relation("DeletionTarget")
   processedDeletions DataDeletionRequest[] @relation("DeletionProcessor")
+
+  quotations Quotation[] @relation("AdminQuotations")
 
   @@map("users")
 }
@@ -170,6 +178,7 @@ model WorkDay {
   methodology      String?
   worksDescription String?  @map("works_description")
   dimensions       Json?    @db.JsonB
+  tempWorks        Json?    @map("temp_works") @db.JsonB // [{item, qty, unit}]
   furtherWork      Boolean? @map("further_work")
   furtherWorkNotes String?  @map("further_work_notes")
 
@@ -320,7 +329,7 @@ model DataDeletionRequest {
   id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   requestedBy  String    @map("requested_by") @db.Uuid
   targetUserId String    @map("target_user_id") @db.Uuid
-  reason       String?
+  reason       String
   status       String    @default("PENDING")
   processedBy  String?   @map("processed_by") @db.Uuid
   processedAt  DateTime? @map("processed_at") @db.Timestamptz()
@@ -331,4 +340,37 @@ model DataDeletionRequest {
   processor User? @relation("DeletionProcessor", fields: [processedBy], references: [id])
 
   @@map("data_deletion_requests")
+}
+
+// ─── QUOTATIONS (Addons) ───────────────────────────────────────────
+
+model Quotation {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  adminId         String          @map("admin_id") @db.Uuid
+  title           String
+  workDescription String          @map("work_description")
+  status          QuotationStatus @default(DRAFT)
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz()
+
+  admin User            @relation("AdminQuotations", fields: [adminId], references: [id])
+  items QuotationItem[]
+
+  @@map("quotations")
+}
+
+model QuotationItem {
+  id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  quotationId String @map("quotation_id") @db.Uuid
+  itemNo      Int    @map("item_no")
+  type        String // "Labour" | "Plant" | "Material" | "Others"
+  description String
+  quantity    Float  @db.DoublePrecision
+  unit        String
+  rate        Float  @db.DoublePrecision
+  amount      Float  @db.DoublePrecision
+
+  quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  @@map("quotation_items")
 }

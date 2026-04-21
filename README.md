@@ -66,7 +66,7 @@ src/
 │   └── prisma.ts              # Prisma client instance
 ├── modules/
 │   ├── auth/                  # Authentication (login, signup, tokens, password reset)
-│   ├── admin/                 # Admin operations (faults, queue, operatives, analytics, GDPR)
+│   ├── admin/                 # Admin operations (faults, queue, operatives, analytics, GDPR, quotations)
 │   ├── operative/             # Operative operations (faults, work days, punching, photos, deletion request)
 │   └── internal/              # Cron jobs (report generation, photo cleanup)
 ├── shared/
@@ -127,6 +127,11 @@ src/
 | GET | `/audit-logs` | List audit logs |
 | GET | `/deletion-requests` | List GDPR deletion requests |
 | PATCH | `/deletion-requests/:id` | Approve/reject deletion request |
+| POST | `/quotations` | Create quotation (draft or final) |
+| GET | `/quotations` | List quotations |
+| GET | `/quotations/:id` | Get quotation with items |
+| PATCH | `/quotations/:id` | Update quotation (draft only) |
+| DELETE | `/quotations/:id` | Delete quotation (draft only) |
 
 ### Operative (`/api/v1/operative`) — requires OPERATIVE role
 | Method | Path | Description |
@@ -167,6 +172,7 @@ All emails use a branded HTML template with Infrava header, styled body, and CTA
 - **Fault → Operative**: `Fault.assignedOperativeId`. One operative per fault.
 - **Fault → WorkDays → PunchEvents**: Per-day reports with GPS timestamped events.
 - **Fault → Photos**: Before/during/after photos stored in R2.
+- **Admin → Quotations → QuotationItems**: Quotations with line-item estimates, scoped to admin.
 
 ### Fault Status Flow
 ```

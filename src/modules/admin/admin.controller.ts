@@ -13,6 +13,7 @@ import {
   CreateOperativeInput, UpdateOperativeInput,
   CreateFaultInput, UpdateFaultInput as AdminUpdateFaultInput,
   ProcessDeletionInput,
+  CreateQuotationInput, UpdateQuotationInput,
 } from './admin.schemas';
 
 // ─── Fault CRUD ─────────────────────────────────────────────────────
@@ -441,7 +442,7 @@ export async function finalSubmit(req: AuthRequest, res: Response): Promise<void
       adminId: req.user!.id,
     },
     include: {
-      admin: { select: { id: true, name: true, email: true } },
+      admin: { select: { id: true, name: true, email: true, avatarUrl: true } },
       assignedOperative: { select: { name: true } },
       photos: { where: { deletedAt: null } },
       workDays: { include: { events: true, photos: { where: { deletedAt: null } } }, orderBy: { dayNumber: 'asc' } },
@@ -514,8 +515,8 @@ export async function downloadReport(req: AuthRequest, res: Response): Promise<v
 
   try {
     const buffer = await getFile(report.pdfR2Key);
-    const filename = `${report.fault?.clientRef || 'report'}.txt`;
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    const filename = `Infrava-Report-${report.fault?.clientRef || 'report'}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buffer);
   } catch {
@@ -618,7 +619,7 @@ export async function deleteOperative(req: AuthRequest, res: Response): Promise<
 export async function getAnalytics(req: AuthRequest, res: Response): Promise<void> {
   const adminId = req.user!.id;
 
-  const [total, byStatus, byPriority, overdue, completedCount] = await Promise.all([
+  const [total, byStatus, byPriority, overdue, completedCount, byWorkType] = await Promise.all([
     prisma.fault.count({ where: { adminId } }),
     prisma.fault.groupBy({ by: ['status'], where: { adminId }, _count: true }),
     prisma.fault.groupBy({ by: ['priority'], where: { adminId }, _count: true }),
@@ -630,7 +631,106 @@ export async function getAnalytics(req: AuthRequest, res: Response): Promise<voi
       },
     }),
     prisma.fault.count({ where: { adminId, status: FaultStatus.COMPLETED } }),
+    prisma.fault.groupBy({ by: ['workType'], where: { adminId }, _count: true }),
   ]);
+
+  // Completed faults for avg completion time
+  const completedFaults = await prisma.fault.findMany({
+    where: { adminId, status: FaultStatus.COMPLETED, completedAt: { not: null } },
+    select: { createdAt: true, completedAt: true },
+  });
+
+  let avgCompletionDays = 0;
+  if (completedFaults.length > 0) {
+    const totalDays = completedFaults.reduce((sum, f) => {
+      const days = (f.completedAt!.getTime() - f.createdAt.getTime()) / (1000 * 60 * 60 * 24);
+      return sum + days;
+    }, 0);
+    avgCompletionDays = Math.round((totalDays / completedFaults.length) * 10) / 10;
+  }
+
+  // Work day hours (PUNCH_IN to PUNCH_OUT)
+  const workDaysWithEvents = await prisma.workDay.findMany({
+    where: { fault: { adminId }, isLocked: true },
+    include: { events: { orderBy: { timestamp: 'asc' } } },
+  });
+
+  let totalHoursAllDays = 0;
+  let daysWithHours = 0;
+  for (const wd of workDaysWithEvents) {
+    const punchIn = wd.events.find((e) => e.eventType === 'PUNCH_IN');
+    const punchOut = wd.events.find((e) => e.eventType === 'PUNCH_OUT');
+    if (punchIn && punchOut) {
+      const hours = (punchOut.timestamp.getTime() - punchIn.timestamp.getTime()) / (1000 * 60 * 60);
+      totalHoursAllDays += hours;
+      daysWithHours++;
+    }
+  }
+  const avgDailyHoursWorked = daysWithHours > 0
+    ? Math.round((totalHoursAllDays / daysWithHours) * 10) / 10
+    : 0;
+
+  // Per-operative stats
+  const operatives = await prisma.user.findMany({
+    where: { adminId, role: 'OPERATIVE', isActive: true },
+    select: { id: true, name: true },
+  });
+
+  const operativeStats = await Promise.all(
+    operatives.map(async (op) => {
+      const [assigned, completed, rejected] = await Promise.all([
+        prisma.fault.count({ where: { adminId, assignedOperativeId: op.id } }),
+        prisma.fault.count({ where: { adminId, assignedOperativeId: op.id, status: FaultStatus.COMPLETED } }),
+        prisma.fault.count({
+          where: {
+            adminId,
+            assignedOperativeId: op.id,
+            auditLog: { some: { changeType: 'REJECTED' } },
+          },
+        }),
+      ]);
+
+      // Operative's completed faults for avg completion
+      const opCompleted = await prisma.fault.findMany({
+        where: { adminId, assignedOperativeId: op.id, status: FaultStatus.COMPLETED, completedAt: { not: null } },
+        select: { createdAt: true, completedAt: true },
+      });
+      let opAvgDays = 0;
+      if (opCompleted.length > 0) {
+        const totalD = opCompleted.reduce((s, f) => s + (f.completedAt!.getTime() - f.createdAt.getTime()) / (1000 * 60 * 60 * 24), 0);
+        opAvgDays = Math.round((totalD / opCompleted.length) * 10) / 10;
+      }
+
+      // Operative's work day hours
+      const opWorkDays = await prisma.workDay.findMany({
+        where: { fault: { adminId, assignedOperativeId: op.id }, isLocked: true },
+        include: { events: { orderBy: { timestamp: 'asc' } } },
+      });
+
+      let opTotalHours = 0;
+      let opDaysWorked = 0;
+      for (const wd of opWorkDays) {
+        const pIn = wd.events.find((e) => e.eventType === 'PUNCH_IN');
+        const pOut = wd.events.find((e) => e.eventType === 'PUNCH_OUT');
+        if (pIn && pOut) {
+          opTotalHours += (pOut.timestamp.getTime() - pIn.timestamp.getTime()) / (1000 * 60 * 60);
+          opDaysWorked++;
+        }
+      }
+
+      const submitted = assigned > 0 ? assigned : 1; // avoid division by zero
+      return {
+        operativeId: op.id,
+        name: op.name,
+        faultsAssigned: assigned,
+        faultsCompleted: completed,
+        avgCompletionDays: opAvgDays,
+        totalHoursWorked: Math.round(opTotalHours * 10) / 10,
+        totalDaysWorked: opDaysWorked,
+        rejectionRate: Math.round((rejected / submitted) * 100),
+      };
+    })
+  );
 
   res.json({
     success: true,
@@ -638,8 +738,12 @@ export async function getAnalytics(req: AuthRequest, res: Response): Promise<voi
       total,
       completed: completedCount,
       overdue,
+      avgCompletionDays,
+      avgDailyHoursWorked,
       byStatus: byStatus.map((s) => ({ status: s.status, count: s._count })),
       byPriority: byPriority.map((p) => ({ priority: p.priority || 'Unset', count: p._count })),
+      byWorkType: byWorkType.map((w) => ({ workType: w.workType || 'Unset', count: w._count })),
+      operativeStats,
     },
   });
 }
@@ -728,4 +832,135 @@ export async function processDeletionRequest(req: AuthRequest, res: Response): P
   }
 
   res.json({ success: true, data: { message: `Deletion request ${status.toLowerCase()}` } });
+}
+
+// ─── Quotations (Addons) ───────────────────────────────────────────
+
+export async function createQuotation(req: AuthRequest, res: Response): Promise<void> {
+  const { title, workDescription, status, items } = req.body as CreateQuotationInput;
+
+  const quotation = await prisma.quotation.create({
+    data: {
+      adminId: req.user!.id,
+      title,
+      workDescription,
+      status: status || 'DRAFT',
+      items: {
+        create: items.map((item, i) => ({
+          itemNo: i + 1,
+          type: item.type,
+          description: item.description,
+          quantity: item.quantity,
+          unit: item.unit,
+          rate: item.rate,
+          amount: Math.round(item.quantity * item.rate * 100) / 100,
+        })),
+      },
+    },
+    include: { items: { orderBy: { itemNo: 'asc' } } },
+  });
+
+  res.status(201).json({ success: true, data: quotation });
+}
+
+export async function listQuotations(req: AuthRequest, res: Response): Promise<void> {
+  const quotations = await prisma.quotation.findMany({
+    where: { adminId: req.user!.id },
+    include: { items: true },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  const data = quotations.map((q) => ({
+    ...q,
+    grandTotal: q.items.reduce((sum, item) => sum + item.amount, 0),
+    itemCount: q.items.length,
+  }));
+
+  res.json({ success: true, data });
+}
+
+export async function getQuotation(req: AuthRequest, res: Response): Promise<void> {
+  const quotation = await prisma.quotation.findFirst({
+    where: { id: req.params.id as string, adminId: req.user!.id },
+    include: { items: { orderBy: { itemNo: 'asc' } } },
+  });
+
+  if (!quotation) {
+    res.status(404).json({ success: false, error: 'Quotation not found' });
+    return;
+  }
+
+  const grandTotal = quotation.items.reduce((sum, item) => sum + item.amount, 0);
+  res.json({ success: true, data: { ...quotation, grandTotal } });
+}
+
+export async function updateQuotation(req: AuthRequest, res: Response): Promise<void> {
+  const quotation = await prisma.quotation.findFirst({
+    where: { id: req.params.id as string, adminId: req.user!.id },
+  });
+
+  if (!quotation) {
+    res.status(404).json({ success: false, error: 'Quotation not found' });
+    return;
+  }
+
+  if (quotation.status === 'FINAL') {
+    res.status(400).json({ success: false, error: 'Cannot edit a finalized quotation' });
+    return;
+  }
+
+  const { title, workDescription, status, items } = req.body as UpdateQuotationInput;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.quotation.update({
+      where: { id: quotation.id },
+      data: {
+        ...(title !== undefined && { title }),
+        ...(workDescription !== undefined && { workDescription }),
+        ...(status !== undefined && { status }),
+      },
+    });
+
+    if (items !== undefined) {
+      await tx.quotationItem.deleteMany({ where: { quotationId: quotation.id } });
+      await tx.quotationItem.createMany({
+        data: items.map((item, i) => ({
+          quotationId: quotation.id,
+          itemNo: i + 1,
+          type: item.type,
+          description: item.description,
+          quantity: item.quantity,
+          unit: item.unit,
+          rate: item.rate,
+          amount: Math.round(item.quantity * item.rate * 100) / 100,
+        })),
+      });
+    }
+  });
+
+  const updated = await prisma.quotation.findUnique({
+    where: { id: quotation.id },
+    include: { items: { orderBy: { itemNo: 'asc' } } },
+  });
+
+  res.json({ success: true, data: updated });
+}
+
+export async function deleteQuotation(req: AuthRequest, res: Response): Promise<void> {
+  const quotation = await prisma.quotation.findFirst({
+    where: { id: req.params.id as string, adminId: req.user!.id },
+  });
+
+  if (!quotation) {
+    res.status(404).json({ success: false, error: 'Quotation not found' });
+    return;
+  }
+
+  if (quotation.status === 'FINAL') {
+    res.status(400).json({ success: false, error: 'Cannot delete a finalized quotation' });
+    return;
+  }
+
+  await prisma.quotation.delete({ where: { id: quotation.id } });
+  res.json({ success: true, data: { message: 'Quotation deleted' } });
 }

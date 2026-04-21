@@ -6,7 +6,9 @@ import { env } from '../../config/env';
 import { AuthRequest } from '../../types';
 import { issueTokens, verifyRefreshToken, revokeRefreshToken, revokeAllUserTokens, signAccessToken } from '../../shared/services/token.service';
 import { sendPasswordResetEmail, sendEmailVerification } from '../../shared/services/email.service';
+import { uploadFile, getFileUrl } from '../../shared/services/storage.service';
 import { LoginInput, ForgotPasswordInput, ResetPasswordInput, SignupInput, VerifyEmailInput } from './auth.schemas';
+import path from 'path';
 
 export async function login(req: Request, res: Response): Promise<void> {
   try {
@@ -15,7 +17,7 @@ export async function login(req: Request, res: Response): Promise<void> {
     const user = await prisma.user.findUnique({
       where: { email: email.toLowerCase().trim() },
       select: {
-        id: true, email: true, name: true, role: true,
+        id: true, email: true, name: true, role: true, avatarUrl: true,
         passwordHash: true, isActive: true, adminId: true, emailVerified: true,
       },
     });
@@ -59,7 +61,7 @@ export async function login(req: Request, res: Response): Promise<void> {
       success: true,
       data: {
         accessToken,
-        user: { id: user.id, email: user.email, name: user.name, role: user.role },
+        user: { id: user.id, email: user.email, name: user.name, role: user.role, avatarUrl: user.avatarUrl },
       },
     });
   } catch (err) {
@@ -286,6 +288,37 @@ export async function verifyEmail(req: Request, res: Response): Promise<void> {
     res.json({ success: true, data: { message: 'Email verified. You can now log in.' } });
   } catch (err) {
     console.error('Verify email error:', err);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+}
+
+export async function uploadAvatar(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    if (!req.user) {
+      res.status(401).json({ success: false, error: 'Not authenticated' });
+      return;
+    }
+
+    const file = req.file;
+    if (!file) {
+      res.status(400).json({ success: false, error: 'No file uploaded' });
+      return;
+    }
+
+    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+    const key = `avatars/${req.user.id}${ext}`;
+
+    await uploadFile(key, file.buffer);
+    const avatarUrl = getFileUrl(key);
+
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: { avatarUrl },
+    });
+
+    res.json({ success: true, data: { avatarUrl } });
+  } catch (err) {
+    console.error('Upload avatar error:', err);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 }

@@ -51,12 +51,13 @@ export const updateWorkDaySchema = z.object({
   methodology: z.string().optional(),
   worksDescription: z.string().optional(),
   dimensions: z.array(dimensionRowSchema).optional(),
+  tempWorks: z.array(materialRowSchema).optional(),
   furtherWork: z.boolean().optional(),
   furtherWorkNotes: z.string().optional(),
 });
 
 export const deletionRequestSchema = z.object({
-  reason: z.string().max(500).optional(),
+  reason: z.string().min(1, 'Reason is required').max(500),
 });
 
 export type UpdateFaultInput = z.infer<typeof updateFaultSchema>;

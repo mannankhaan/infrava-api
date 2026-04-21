@@ -72,3 +72,28 @@ export type RejectInput = z.infer<typeof rejectSchema>;
 export type CreateOperativeInput = z.infer<typeof createOperativeSchema>;
 export type UpdateOperativeInput = z.infer<typeof updateOperativeSchema>;
 export type ProcessDeletionInput = z.infer<typeof processDeletionSchema>;
+
+// ─── Quotations ─────────────────────────────────────────────────────
+
+const estimateItemSchema = z.object({
+  type: z.enum(['Labour', 'Plant', 'Material', 'Others']),
+  description: z.string().min(1, 'Description is required'),
+  quantity: z.number().positive('Quantity must be positive'),
+  unit: z.string().min(1, 'Unit is required'),
+  rate: z.number().min(0, 'Rate must be non-negative'),
+});
+
+export const createQuotationSchema = z.object({
+  title: z.string().min(1, 'Title is required'),
+  workDescription: z.string().refine(
+    (val) => val.trim().split(/\s+/).filter(Boolean).length >= 250,
+    { message: 'Work description must be at least 250 words' }
+  ),
+  status: z.enum(['DRAFT', 'FINAL']).optional().default('DRAFT'),
+  items: z.array(estimateItemSchema).min(1, 'At least one estimate item is required'),
+});
+
+export const updateQuotationSchema = createQuotationSchema.partial();
+
+export type CreateQuotationInput = z.infer<typeof createQuotationSchema>;
+export type UpdateQuotationInput = z.infer<typeof updateQuotationSchema>;

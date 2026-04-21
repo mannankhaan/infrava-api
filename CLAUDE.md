@@ -90,7 +90,16 @@ npm run db:studio    # Prisma Studio GUI
 npm run db:seed      # Seed data
 ```
 
-Schema is at `prisma/schema.prisma`. Key models: `User`, `Fault`, `WorkDay`, `PunchEvent`, `FaultPhoto`, `DataDeletionRequest`.
+Schema is at `prisma/schema.prisma`. Key models: `User`, `Fault`, `WorkDay`, `PunchEvent`, `FaultPhoto`, `DataDeletionRequest`, `Quotation`, `QuotationItem`.
+
+### Quotations (Addons)
+- Admin-scoped CRUD for project quotations with line-item estimates
+- `Quotation` has status: `DRAFT` (editable/deletable) or `FINAL` (read-only)
+- `QuotationItem` stores type (Labour/Plant/Material/Others), description, quantity, unit, rate, amount
+- Amount is computed server-side: `Math.round(quantity * rate * 100) / 100`
+- Work description has a 250-word minimum (validated via Zod `.refine()`)
+- Update uses `$transaction`: update quotation fields → `deleteMany` items → `createMany` new items
+- Only DRAFT quotations can be edited or deleted
 
 ## Things to Watch Out For
 

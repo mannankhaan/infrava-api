@@ -364,6 +364,7 @@ export async function updateWorkDay(req: AuthRequest, res: Response): Promise<vo
       ...(input.methodology !== undefined && { methodology: input.methodology }),
       ...(input.worksDescription !== undefined && { worksDescription: input.worksDescription }),
       ...(input.dimensions !== undefined && { dimensions: input.dimensions as any }),
+      ...(input.tempWorks !== undefined && { tempWorks: input.tempWorks as any }),
       ...(input.furtherWork !== undefined && { furtherWork: input.furtherWork }),
       ...(input.furtherWorkNotes !== undefined && { furtherWorkNotes: input.furtherWorkNotes }),
     },
@@ -396,7 +397,7 @@ export async function requestDeletion(req: AuthRequest, res: Response): Promise<
     data: {
       requestedBy: userId,
       targetUserId: userId,
-      reason: reason || null,
+      reason,
     },
   });
 

@@ -21,6 +21,7 @@ import {
   assignOperativeSchema, reassignSchema, rejectSchema,
   createOperativeSchema, updateOperativeSchema,
   processDeletionSchema,
+  createQuotationSchema, updateQuotationSchema,
 } from './admin.schemas';
 import * as ctrl from './admin.controller';
 
@@ -60,5 +61,12 @@ router.get('/reports/:id/download', ctrl.downloadReport);
 router.get('/audit-logs', ctrl.listAuditLogs);
 router.get('/deletion-requests', ctrl.listDeletionRequests);
 router.patch('/deletion-requests/:id', validate(processDeletionSchema), ctrl.processDeletionRequest);
+
+// Quotations (Addons)
+router.post('/quotations', validate(createQuotationSchema), ctrl.createQuotation);
+router.get('/quotations', ctrl.listQuotations);
+router.get('/quotations/:id', ctrl.getQuotation);
+router.patch('/quotations/:id', validate(updateQuotationSchema), ctrl.updateQuotation);
+router.delete('/quotations/:id', ctrl.deleteQuotation);
 
 export default router;
