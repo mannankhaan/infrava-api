@@ -16,6 +16,9 @@ import { auditMiddleware } from './shared/middleware/audit.middleware';
 
 const app = express();
 
+// Trust proxy (Railway, Vercel, etc. sit behind reverse proxies)
+app.set('trust proxy', 1);
+
 // Security
 app.use(helmet({
   crossOriginResourcePolicy: false, // Allow loading images from different origins (R2)
