@@ -13,41 +13,41 @@ type FaultWithRelations = Fault & {
   workDays: WorkDayWithRelations[];
 };
 
-// Brand colors
+// Brand palette
 const NAVY = '#1C2B41';
 const BLUE = '#0C66E4';
-const GRAY_DARK = '#333333';
-const GRAY_MED = '#666666';
-const GRAY_LIGHT = '#999999';
-const GRAY_BORDER = '#E0E0E0';
-const BLUE_LIGHT = '#F0F4FF';
-const GREEN_CHECK = '#16A34A';
-const RED_CROSS = '#DC2626';
+const BLUE_DARK = '#0A52B4';
+const GRAY_DARK = '#1A1A1A';
+const GRAY_MED = '#4A4A4A';
+const GRAY_LIGHT = '#888888';
+const GRAY_RULE = '#CCCCCC';
+const BG_LIGHT = '#F5F7FA';
+const BG_TABLE_ALT = '#F0F4FF';
+const GREEN = '#16A34A';
+const RED = '#DC2626';
+const WHITE = '#FFFFFF';
 
 const LOGO_PATH = path.join(process.cwd(), 'assets', 'logo.png');
 
-function formatDate(d: Date | string | null | undefined): string {
-  if (!d) return 'N/A';
+function fmtDate(d: Date | string | null | undefined): string {
+  if (!d) return '—';
   const date = typeof d === 'string' ? new Date(d) : d;
   return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-function formatDateTime(d: Date | string | null | undefined): string {
-  if (!d) return 'N/A';
+function fmtDateTime(d: Date | string | null | undefined): string {
+  if (!d) return '—';
   const date = typeof d === 'string' ? new Date(d) : d;
-  return date.toLocaleString('en-GB', {
-    day: 'numeric', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  });
+  return date.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function formatTime(d: Date | string): string {
+function fmtTime(d: Date | string): string {
   const date = typeof d === 'string' ? new Date(d) : d;
   return date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 }
 
-function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 3958.8; // miles
+function haversine(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 3958.8;
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLng = (lng2 - lng1) * Math.PI / 180;
   const a = Math.sin(dLat / 2) ** 2 +
@@ -56,7 +56,7 @@ function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: numbe
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function timeDiff(t1: Date | string, t2: Date | string): string {
+function elapsed(t1: Date | string, t2: Date | string): string {
   const ms = new Date(t2).getTime() - new Date(t1).getTime();
   const mins = Math.round(ms / 60000);
   if (mins < 60) return `${mins} min`;
@@ -65,187 +65,279 @@ function timeDiff(t1: Date | string, t2: Date | string): string {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
-async function loadAdminAvatar(avatarUrl: string | null | undefined): Promise<Buffer | null> {
+async function loadAvatar(avatarUrl: string | null | undefined): Promise<Buffer | null> {
   if (!avatarUrl) return null;
   try {
-    // avatarUrl is like "http://localhost:4000/uploads/avatars/xxx.jpg"
-    // Extract the key: "avatars/xxx.jpg"
     const match = avatarUrl.match(/uploads\/(.+)$/);
-    if (match) {
-      return await getFile(match[1]);
-    }
-  } catch {
-    // Avatar not available — skip
-  }
+    if (match) return await getFile(match[1]);
+  } catch { /* skip */ }
   return null;
 }
 
 export async function generateFaultPdf(fault: FaultWithRelations): Promise<string> {
+  const LM = 50;            // left margin
+  const RM = 50;            // right margin
   const doc = new PDFDocument({
     size: 'A4',
-    margins: { top: 40, bottom: 40, left: 40, right: 40 },
+    margins: { top: 50, bottom: 60, left: LM, right: RM },
     bufferPages: true,
     info: {
-      Title: `Infrava Report - ${fault.clientRef}`,
+      Title: `Infrava Report — ${fault.clientRef}`,
       Author: 'Infrava Private Limited',
     },
   });
 
   const chunks: Buffer[] = [];
-  doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+  doc.on('data', (c: Buffer) => chunks.push(c));
 
-  const pageWidth = doc.page.width - 80; // 40px margins each side
-  const leftMargin = 40;
+  const PW = doc.page.width - LM - RM; // usable page width
 
-  // ─── Helper functions ───
+  /* ================================================================
+     DRAWING PRIMITIVES
+     ================================================================ */
 
-  function drawSectionHeader(title: string) {
-    ensureSpace(30);
-    doc.moveDown(0.5);
-    doc.fillColor(NAVY).fontSize(13).font('Helvetica-Bold').text(title, leftMargin);
-    const y = doc.y + 2;
-    doc.moveTo(leftMargin, y).lineTo(leftMargin + pageWidth, y).strokeColor(BLUE).lineWidth(1.5).stroke();
-    doc.moveDown(0.4);
-  }
-
-  function drawKeyValue(label: string, value: string, indent = 0) {
-    ensureSpace(16);
-    const x = leftMargin + indent;
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(GRAY_MED).text(label + ':', x, doc.y, { continued: true });
-    doc.font('Helvetica').fillColor(GRAY_DARK).text('  ' + value);
-  }
-
-  function drawCheckItem(label: string, checked: boolean) {
-    ensureSpace(16);
-    const symbol = checked ? '\u2713' : '\u2717';
-    const color = checked ? GREEN_CHECK : RED_CROSS;
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(color).text(symbol, leftMargin + 10, doc.y, { continued: true });
-    doc.font('Helvetica').fillColor(GRAY_DARK).text('  ' + label);
-  }
-
-  function drawTableHeader(columns: { label: string; width: number }[]) {
-    ensureSpace(20);
-    const y = doc.y;
-    doc.rect(leftMargin, y, pageWidth, 18).fill(NAVY);
-    let x = leftMargin + 6;
-    for (const col of columns) {
-      doc.fontSize(8).font('Helvetica-Bold').fillColor('#FFFFFF').text(col.label, x, y + 4, { width: col.width - 12 });
-      x += col.width;
+  function ensureSpace(h: number) {
+    if (doc.y + h > doc.page.height - 80) {
+      doc.addPage();
+      doc.y = 50;
     }
-    doc.y = y + 18;
   }
 
-  function drawTableRow(columns: { value: string; width: number }[], isAlt: boolean) {
+  /** Bold navy bar with white text — primary section divider */
+  function sectionBar(title: string) {
+    ensureSpace(40);
+    doc.moveDown(0.8);
+    const y = doc.y;
+    doc.rect(LM, y, PW, 26).fill(NAVY);
+    doc.fontSize(12).font('Helvetica-Bold').fillColor(WHITE)
+      .text(title.toUpperCase(), LM + 12, y + 7, { width: PW - 24 });
+    doc.y = y + 32;
+  }
+
+  /** Lighter sub-header inside a section */
+  function subHeader(title: string) {
+    ensureSpace(28);
+    doc.moveDown(0.4);
+    const y = doc.y;
+    doc.rect(LM, y, PW, 22).fill(BG_LIGHT);
+    doc.moveTo(LM, y).lineTo(LM, y + 22).lineWidth(3).strokeColor(BLUE).stroke();
+    doc.fontSize(11).font('Helvetica-Bold').fillColor(NAVY)
+      .text(title, LM + 10, y + 5, { width: PW - 20 });
+    doc.y = y + 26;
+  }
+
+  /** Key–value row with bold label, consistent alignment */
+  function kvRow(label: string, value: string, x = LM, labelW = 140) {
     ensureSpace(18);
     const y = doc.y;
-    if (isAlt) {
-      doc.rect(leftMargin, y, pageWidth, 16).fill(BLUE_LIGHT);
-    }
-    let x = leftMargin + 6;
-    for (const col of columns) {
-      doc.fontSize(8).font('Helvetica').fillColor(GRAY_DARK).text(col.value, x, y + 3, { width: col.width - 12 });
-      x += col.width;
-    }
-    doc.y = y + 16;
+    doc.fontSize(10).font('Helvetica-Bold').fillColor(GRAY_MED)
+      .text(label, x + 6, y, { width: labelW });
+    doc.fontSize(10).font('Helvetica').fillColor(GRAY_DARK)
+      .text(value || '—', x + 6 + labelW, y, { width: PW - labelW - 12 });
+    doc.y = y + 17;
   }
 
-  function ensureSpace(needed: number) {
-    // Reserve 45px at bottom for the page footer
-    if (doc.y + needed > doc.page.height - 75) {
-      doc.addPage();
-      doc.y = 40;
-    }
+  /** Wrapped body text */
+  function bodyText(text: string) {
+    ensureSpace(20);
+    doc.fontSize(10).font('Helvetica').fillColor(GRAY_DARK)
+      .text(text, LM + 8, doc.y, { width: PW - 16, lineGap: 3 });
+    doc.moveDown(0.2);
   }
 
-  // ─── HEADER ───
+  /** Table header bar */
+  function tHead(cols: { label: string; w: number }[]) {
+    ensureSpace(26);
+    const y = doc.y;
+    doc.rect(LM, y, PW, 24).fill(BLUE_DARK);
+    let x = LM;
+    for (const c of cols) {
+      doc.fontSize(9).font('Helvetica-Bold').fillColor(WHITE)
+        .text(c.label, x + 8, y + 7, { width: c.w - 16 });
+      x += c.w;
+    }
+    doc.y = y + 24;
+  }
 
-  // Load logos
-  let hasLogo = false;
+  /** Table data row */
+  function tRow(cols: { val: string; w: number }[], alt: boolean) {
+    ensureSpace(22);
+    const y = doc.y;
+    if (alt) doc.rect(LM, y, PW, 22).fill(BG_TABLE_ALT);
+    // Bottom border
+    doc.moveTo(LM, y + 22).lineTo(LM + PW, y + 22).lineWidth(0.5).strokeColor(GRAY_RULE).stroke();
+    let x = LM;
+    for (const c of cols) {
+      doc.fontSize(9).font('Helvetica').fillColor(GRAY_DARK)
+        .text(c.val, x + 8, y + 6, { width: c.w - 16 });
+      x += c.w;
+    }
+    doc.y = y + 22;
+  }
+
+  /** Bordered info box with light background */
+  function infoBox(fn: () => void) {
+    ensureSpace(40);
+    const startY = doc.y;
+    // Draw content first to measure height
+    doc.save();
+    doc.y = startY + 10;
+    const savedX = LM + 10;
+    doc.x = savedX;
+    fn();
+    const endY = doc.y + 10;
+    const boxH = endY - startY;
+    doc.restore();
+    // Draw box background + border
+    doc.rect(LM, startY, PW, boxH).fill(BG_LIGHT);
+    doc.rect(LM, startY, PW, boxH).lineWidth(1).strokeColor(GRAY_RULE).stroke();
+    // Re-draw content on top
+    doc.y = startY + 10;
+    fn();
+    doc.y = endY + 4;
+  }
+
+  /* ================================================================
+     COVER PAGE
+     ================================================================ */
+
+  // Top navy stripe
+  doc.rect(0, 0, doc.page.width, 6).fill(NAVY);
+
+  // Logo (or placeholder)
   try {
     if (fs.existsSync(LOGO_PATH)) {
-      doc.image(LOGO_PATH, leftMargin, 30, { height: 40 });
-      hasLogo = true;
+      doc.image(LOGO_PATH, LM, 40, { height: 44 });
+    } else {
+      // Branded placeholder: navy rounded rect with white "I" initial
+      doc.roundedRect(LM, 40, 44, 44, 6).fill(NAVY);
+      doc.fontSize(22).font('Helvetica-Bold').fillColor(WHITE).text('I', LM + 15, 50);
+      doc.fontSize(8).font('Helvetica-Bold').fillColor(NAVY).text('INFRAVA', LM + 48, 55);
     }
-  } catch { /* skip logo */ }
+  } catch {
+    // Fallback placeholder if anything fails
+    doc.roundedRect(LM, 40, 44, 44, 6).fill(NAVY);
+    doc.fontSize(22).font('Helvetica-Bold').fillColor(WHITE).text('I', LM + 15, 50);
+    doc.fontSize(8).font('Helvetica-Bold').fillColor(NAVY).text('INFRAVA', LM + 48, 55);
+  }
 
-  // Admin avatar (right side)
-  const adminAvatar = await loadAdminAvatar(fault.admin.avatarUrl);
-  if (adminAvatar) {
+  // Admin avatar
+  const avatar = await loadAvatar(fault.admin.avatarUrl);
+  if (avatar) {
     try {
-      doc.image(adminAvatar, doc.page.width - 40 - 40, 30, { height: 40, width: 40 });
-    } catch { /* skip avatar */ }
+      doc.image(avatar, doc.page.width - RM - 44, 40, { height: 44, width: 44 });
+    } catch { /* skip */ }
   }
 
-  // Title
-  doc.y = hasLogo ? 80 : 40;
-  doc.fontSize(18).font('Helvetica-Bold').fillColor(NAVY).text('Fault Assignment Report', leftMargin, doc.y, { align: 'center' });
-  doc.moveDown(0.2);
-  doc.fontSize(9).font('Helvetica').fillColor(GRAY_LIGHT).text(`Generated ${formatDateTime(new Date())}`, { align: 'center' });
+  // Report title
+  doc.y = 110;
+  doc.fontSize(28).font('Helvetica-Bold').fillColor(NAVY)
+    .text('FAULT ASSIGNMENT', LM, doc.y, { align: 'center' });
+  doc.fontSize(28).font('Helvetica-Bold').fillColor(BLUE)
+    .text('REPORT', { align: 'center' });
+  doc.moveDown(0.6);
+
+  // Accent line
+  const lineY = doc.y;
+  const accentW = 80;
+  const accentX = (doc.page.width - accentW) / 2;
+  doc.moveTo(accentX, lineY).lineTo(accentX + accentW, lineY).lineWidth(3).strokeColor(BLUE).stroke();
+  doc.moveDown(1);
+
+  // Cover info box
+  infoBox(() => {
+    const bx = LM + 14;
+    const bLabelW = 130;
+    const bValX = bx + bLabelW;
+    const bValW = PW - bLabelW - 28;
+
+    const rows: [string, string][] = [
+      ['Client Reference', fault.clientRef],
+      ['Company Reference', fault.companyRef || '—'],
+      ['Title', fault.title || '—'],
+      ['Fault Date', fmtDate(fault.faultDate)],
+      ['Status', fault.status.replace(/_/g, ' ')],
+      ['Operative', fault.assignedOperative?.name || '—'],
+      ['Prepared By', fault.admin.name],
+    ];
+
+    for (const [label, value] of rows) {
+      const ry = doc.y;
+      doc.fontSize(11).font('Helvetica-Bold').fillColor(NAVY).text(label, bx, ry, { width: bLabelW });
+      doc.fontSize(11).font('Helvetica').fillColor(GRAY_DARK).text(value, bValX, ry, { width: bValW });
+      doc.y = ry + 22;
+    }
+  });
+
+  doc.moveDown(1.5);
+
+  // Cover footer text
+  doc.fontSize(10).font('Helvetica').fillColor(GRAY_LIGHT)
+    .text('This document is confidential and intended for authorised personnel only.', LM, doc.y, { align: 'center', width: PW });
   doc.moveDown(0.3);
+  doc.fontSize(10).font('Helvetica-Bold').fillColor(NAVY)
+    .text('Infrava Private Limited', { align: 'center', width: PW });
 
-  // Divider
-  const divY = doc.y;
-  doc.moveTo(leftMargin, divY).lineTo(leftMargin + pageWidth, divY).strokeColor(GRAY_BORDER).lineWidth(1).stroke();
-  doc.moveDown(0.5);
+  // Bottom navy stripe on cover
+  doc.rect(0, doc.page.height - 6, doc.page.width, 6).fill(NAVY);
 
-  // ─── FAULT SUMMARY ───
+  /* ================================================================
+     CONTENT PAGES
+     ================================================================ */
 
-  drawSectionHeader('Fault Summary');
+  doc.addPage();
 
-  const summaryCol1 = [
-    ['Client Ref', fault.clientRef],
-    ['Company Ref', fault.companyRef || 'N/A'],
-    ['Fault Date', formatDate(fault.faultDate)],
-    ['Status', fault.status.replace(/_/g, ' ')],
+  // ─── FAULT DETAILS ───
+
+  sectionBar('Fault Details');
+
+  const half = PW / 2;
+  const pairs: [string, string, string, string][] = [
+    ['Client Ref', fault.clientRef, 'Operative', fault.assignedOperative?.name || '—'],
+    ['Company Ref', fault.companyRef || '—', 'Priority', fault.priority || '—'],
+    ['Fault Date', fmtDate(fault.faultDate), 'Work Type', fault.workType || '—'],
+    ['Status', fault.status.replace(/_/g, ' '), 'Location', fault.locationText || '—'],
   ];
 
-  const summaryCol2 = [
-    ['Operative', fault.assignedOperative?.name || 'N/A'],
-    ['Priority', fault.priority || 'N/A'],
-    ['Work Type', fault.workType || 'N/A'],
-    ['Location', fault.locationText || 'N/A'],
-  ];
-
-  // Two-column layout for summary
-  const colWidth = pageWidth / 2;
-  const startY = doc.y;
-
-  for (let i = 0; i < summaryCol1.length; i++) {
-    doc.y = startY + i * 16;
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(GRAY_MED).text(summaryCol1[i][0] + ':', leftMargin, doc.y, { width: colWidth });
-    doc.fontSize(9).font('Helvetica').fillColor(GRAY_DARK).text(summaryCol1[i][1], leftMargin + 90, doc.y - doc.currentLineHeight());
+  for (const [l1, v1, l2, v2] of pairs) {
+    ensureSpace(20);
+    const y = doc.y;
+    // Left
+    doc.fontSize(10).font('Helvetica-Bold').fillColor(GRAY_MED).text(l1, LM + 6, y, { width: 100 });
+    doc.fontSize(10).font('Helvetica').fillColor(GRAY_DARK).text(v1, LM + 110, y, { width: half - 120 });
+    // Right
+    doc.fontSize(10).font('Helvetica-Bold').fillColor(GRAY_MED).text(l2, LM + half + 6, y, { width: 100 });
+    doc.fontSize(10).font('Helvetica').fillColor(GRAY_DARK).text(v2, LM + half + 110, y, { width: half - 120 });
+    doc.y = y + 20;
   }
 
-  for (let i = 0; i < summaryCol2.length; i++) {
-    doc.y = startY + i * 16;
-    const x2 = leftMargin + colWidth;
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(GRAY_MED).text(summaryCol2[i][0] + ':', x2, doc.y, { width: colWidth });
-    doc.fontSize(9).font('Helvetica').fillColor(GRAY_DARK).text(summaryCol2[i][1], x2 + 90, doc.y - doc.currentLineHeight());
+  // Light rule after summary grid
+  doc.moveDown(0.2);
+  doc.moveTo(LM, doc.y).lineTo(LM + PW, doc.y).lineWidth(0.5).strokeColor(GRAY_RULE).stroke();
+  doc.moveDown(0.4);
+
+  if (fault.description) {
+    kvRow('Description', '');
+    bodyText(fault.description);
   }
-
-  doc.y = startY + summaryCol1.length * 16 + 4;
-
-  // Additional details
-  if (fault.title) drawKeyValue('Title', fault.title);
-  if (fault.description) drawKeyValue('Description', fault.description);
-  if (fault.timeAllocated) drawKeyValue('Time Allocated', formatDateTime(fault.timeAllocated));
-  if (fault.plannedArrival) drawKeyValue('Planned Arrival', formatDateTime(fault.plannedArrival));
-  if (fault.plannedCompletion) drawKeyValue('Planned Completion', formatDateTime(fault.plannedCompletion));
+  if (fault.timeAllocated) kvRow('Time Allocated', fmtDateTime(fault.timeAllocated));
+  if (fault.plannedArrival) kvRow('Planned Arrival', fmtDateTime(fault.plannedArrival));
+  if (fault.plannedCompletion) kvRow('Planned Completion', fmtDateTime(fault.plannedCompletion));
 
   // ─── ONSITE CONTACT ───
 
   if (fault.onsiteContactName || fault.onsiteContactPhone || fault.onsiteContactEmail) {
-    drawSectionHeader('Onsite Contact');
-    if (fault.onsiteContactName) drawKeyValue('Name', fault.onsiteContactName);
-    if (fault.onsiteContactPhone) drawKeyValue('Phone', fault.onsiteContactPhone);
-    if (fault.onsiteContactEmail) drawKeyValue('Email', fault.onsiteContactEmail);
+    sectionBar('Onsite Contact');
+    if (fault.onsiteContactName) kvRow('Name', fault.onsiteContactName);
+    if (fault.onsiteContactPhone) kvRow('Phone', fault.onsiteContactPhone);
+    if (fault.onsiteContactEmail) kvRow('Email', fault.onsiteContactEmail);
   }
 
   // ─── VISIT REQUIREMENTS ───
 
-  drawSectionHeader('Visit Requirements');
+  sectionBar('Visit Requirements');
 
-  const requirements = [
+  const reqs: [string, boolean][] = [
     ['Task Briefing', fault.visitTaskBriefing],
     ['LSR', fault.visitLsr],
     ['Link Block', fault.visitLinkBlock],
@@ -256,57 +348,67 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
     ['Track Access', fault.visitTrackAccess],
     ['Temp Works Required', fault.visitTempWorksRequired],
     ['Working at Height', fault.visitWorkingAtHeight],
-  ] as const;
+  ];
 
-  for (const [label, val] of requirements) {
-    drawCheckItem(label, val);
+  for (let i = 0; i < reqs.length; i += 2) {
+    ensureSpace(22);
+    const y = doc.y;
+    // Alternating row background
+    if (Math.floor(i / 2) % 2 === 0) {
+      doc.rect(LM, y, PW, 20).fill(BG_LIGHT);
+    }
+    for (let col = 0; col < 2; col++) {
+      const idx = i + col;
+      if (idx >= reqs.length) break;
+      const [label, checked] = reqs[idx];
+      const x = LM + col * half + 12;
+      const icon = checked ? '\u2713  ' : '\u2717  ';
+      const color = checked ? GREEN : RED;
+      doc.fontSize(10).font('Helvetica-Bold').fillColor(color).text(icon, x, y + 4, { continued: true });
+      doc.fontSize(10).font('Helvetica').fillColor(GRAY_DARK).text(label);
+    }
+    doc.y = y + 20;
   }
 
   // ─── CONTRACTOR ───
 
   if (fault.contractorCompany || fault.contractorName) {
-    drawSectionHeader('Contractor Details');
-    if (fault.contractorCompany) drawKeyValue('Company', fault.contractorCompany);
-    if (fault.contractorName) drawKeyValue('Name', fault.contractorName);
-    if (fault.contractorEmail) drawKeyValue('Email', fault.contractorEmail);
-    if (fault.contractorMobile) drawKeyValue('Mobile', fault.contractorMobile);
+    sectionBar('Contractor Details');
+    if (fault.contractorCompany) kvRow('Company', fault.contractorCompany);
+    if (fault.contractorName) kvRow('Name', fault.contractorName);
+    if (fault.contractorEmail) kvRow('Email', fault.contractorEmail);
+    if (fault.contractorMobile) kvRow('Mobile', fault.contractorMobile);
   }
 
   // ─── DAILY REPORTS ───
 
   for (const day of fault.workDays) {
-    drawSectionHeader(`Day ${day.dayNumber}${day.isLocked ? ' (Locked)' : ''}`);
+    sectionBar(`Day ${day.dayNumber}${day.isLocked ? '  —  Locked' : ''}`);
 
-    // Attendance table
+    // Attendance
     if (day.events.length > 0) {
-      ensureSpace(40);
-      doc.fontSize(10).font('Helvetica-Bold').fillColor(GRAY_DARK).text('Attendance', leftMargin + 4);
-      doc.moveDown(0.2);
-
-      const evtCols = [
-        { label: 'Event', width: 120 },
-        { label: 'Time', width: 80 },
-        { label: 'Latitude', width: 100 },
-        { label: 'Longitude', width: 100 },
-        { label: 'Elapsed / Distance', width: pageWidth - 400 },
+      subHeader('Attendance');
+      const cols = [
+        { label: 'Event', w: PW * 0.25 },
+        { label: 'Time', w: PW * 0.15 },
+        { label: 'Latitude', w: PW * 0.2 },
+        { label: 'Longitude', w: PW * 0.2 },
+        { label: 'Elapsed / Dist', w: PW * 0.2 },
       ];
-      drawTableHeader(evtCols);
-
+      tHead(cols);
       for (let i = 0; i < day.events.length; i++) {
         const evt = day.events[i];
-        let elapsed = '';
+        let info = '';
         if (i > 0) {
           const prev = day.events[i - 1];
-          const time = timeDiff(prev.timestamp, evt.timestamp);
-          const dist = haversineDistance(prev.lat, prev.lng, evt.lat, evt.lng);
-          elapsed = `${time} / ${dist.toFixed(1)} mi`;
+          info = `${elapsed(prev.timestamp, evt.timestamp)}  /  ${haversine(prev.lat, prev.lng, evt.lat, evt.lng).toFixed(1)} mi`;
         }
-        drawTableRow([
-          { value: evt.eventType.replace(/_/g, ' '), width: 120 },
-          { value: formatTime(evt.timestamp), width: 80 },
-          { value: evt.lat.toFixed(6), width: 100 },
-          { value: evt.lng.toFixed(6), width: 100 },
-          { value: elapsed, width: pageWidth - 400 },
+        tRow([
+          { val: evt.eventType.replace(/_/g, ' '), w: PW * 0.25 },
+          { val: fmtTime(evt.timestamp), w: PW * 0.15 },
+          { val: evt.lat.toFixed(6), w: PW * 0.2 },
+          { val: evt.lng.toFixed(6), w: PW * 0.2 },
+          { val: info, w: PW * 0.2 },
         ], i % 2 === 1);
       }
       doc.moveDown(0.3);
@@ -314,171 +416,139 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
 
     // Personnel
     if (day.supervisorNames || day.tradespersonNames || day.operativeName) {
-      ensureSpace(20);
-      doc.fontSize(10).font('Helvetica-Bold').fillColor(GRAY_DARK).text('Personnel', leftMargin + 4);
-      doc.moveDown(0.1);
-      if (day.supervisorNames) drawKeyValue('Supervisor(s)', day.supervisorNames, 8);
-      if (day.tradespersonNames) drawKeyValue('Tradesperson(s)', day.tradespersonNames, 8);
-      if (day.operativeName) drawKeyValue('Operative', day.operativeName, 8);
-      doc.moveDown(0.2);
+      subHeader('Personnel');
+      if (day.supervisorNames) kvRow('Supervisor(s)', day.supervisorNames);
+      if (day.tradespersonNames) kvRow('Tradesperson(s)', day.tradespersonNames);
+      if (day.operativeName) kvRow('Operative', day.operativeName);
     }
 
     // Temp Works
-    const tempWorks = day.tempWorks as { item: string; qty: number; unit?: string }[] | null;
-    if (tempWorks && Array.isArray(tempWorks) && tempWorks.length > 0) {
-      ensureSpace(40);
-      doc.fontSize(10).font('Helvetica-Bold').fillColor(GRAY_DARK).text('Temp Works', leftMargin + 4);
-      doc.moveDown(0.2);
-
-      const twCols = [
-        { label: 'Item', width: pageWidth * 0.5 },
-        { label: 'Qty', width: pageWidth * 0.25 },
-        { label: 'Unit', width: pageWidth * 0.25 },
+    const tw = day.tempWorks as { item: string; qty: number; unit?: string }[] | null;
+    if (tw && Array.isArray(tw) && tw.length > 0) {
+      subHeader('Temp Works');
+      const cols = [
+        { label: 'Item', w: PW * 0.5 },
+        { label: 'Qty', w: PW * 0.25 },
+        { label: 'Unit', w: PW * 0.25 },
       ];
-      drawTableHeader(twCols);
-      tempWorks.forEach((row, i) => {
-        if (row.item) {
-          drawTableRow([
-            { value: row.item, width: pageWidth * 0.5 },
-            { value: String(row.qty), width: pageWidth * 0.25 },
-            { value: row.unit || '', width: pageWidth * 0.25 },
-          ], i % 2 === 1);
-        }
+      tHead(cols);
+      tw.forEach((r, i) => {
+        if (r.item) tRow([
+          { val: r.item, w: PW * 0.5 },
+          { val: String(r.qty), w: PW * 0.25 },
+          { val: r.unit || '', w: PW * 0.25 },
+        ], i % 2 === 1);
       });
       doc.moveDown(0.3);
     }
 
     // Materials
-    const materials = day.materialsUsed as { item: string; qty: number; unit?: string }[] | null;
-    if (materials && Array.isArray(materials) && materials.length > 0) {
-      ensureSpace(40);
-      doc.fontSize(10).font('Helvetica-Bold').fillColor(GRAY_DARK).text('Materials Used', leftMargin + 4);
-      doc.moveDown(0.2);
-
-      const matCols = [
-        { label: 'Item', width: pageWidth * 0.5 },
-        { label: 'Qty', width: pageWidth * 0.25 },
-        { label: 'Unit', width: pageWidth * 0.25 },
+    const mats = day.materialsUsed as { item: string; qty: number; unit?: string }[] | null;
+    if (mats && Array.isArray(mats) && mats.length > 0) {
+      subHeader('Materials Used');
+      const cols = [
+        { label: 'Item', w: PW * 0.5 },
+        { label: 'Qty', w: PW * 0.25 },
+        { label: 'Unit', w: PW * 0.25 },
       ];
-      drawTableHeader(matCols);
-      materials.forEach((row, i) => {
-        if (row.item) {
-          drawTableRow([
-            { value: row.item, width: pageWidth * 0.5 },
-            { value: String(row.qty), width: pageWidth * 0.25 },
-            { value: row.unit || '', width: pageWidth * 0.25 },
-          ], i % 2 === 1);
-        }
+      tHead(cols);
+      mats.forEach((r, i) => {
+        if (r.item) tRow([
+          { val: r.item, w: PW * 0.5 },
+          { val: String(r.qty), w: PW * 0.25 },
+          { val: r.unit || '', w: PW * 0.25 },
+        ], i % 2 === 1);
       });
       doc.moveDown(0.3);
     }
 
     // Methodology
     if (day.methodology) {
-      ensureSpace(20);
-      doc.fontSize(10).font('Helvetica-Bold').fillColor(GRAY_DARK).text('Methodology', leftMargin + 4);
-      doc.moveDown(0.1);
-      doc.fontSize(9).font('Helvetica').fillColor(GRAY_DARK).text(day.methodology, leftMargin + 8, doc.y, { width: pageWidth - 16 });
-      doc.moveDown(0.3);
+      subHeader('Methodology');
+      bodyText(day.methodology);
     }
 
     // Works Description
     if (day.worksDescription) {
-      ensureSpace(20);
-      doc.fontSize(10).font('Helvetica-Bold').fillColor(GRAY_DARK).text('Works Description', leftMargin + 4);
-      doc.moveDown(0.1);
-      doc.fontSize(9).font('Helvetica').fillColor(GRAY_DARK).text(day.worksDescription, leftMargin + 8, doc.y, { width: pageWidth - 16 });
-      doc.moveDown(0.3);
+      subHeader('Works Description');
+      bodyText(day.worksDescription);
     }
 
     // Dimensions
-    const dimensions = day.dimensions as { activity: string; qty: number; unit?: string }[] | null;
-    if (dimensions && Array.isArray(dimensions) && dimensions.length > 0) {
-      ensureSpace(40);
-      doc.fontSize(10).font('Helvetica-Bold').fillColor(GRAY_DARK).text('Dimensions', leftMargin + 4);
-      doc.moveDown(0.2);
-
-      const dimCols = [
-        { label: 'Activity', width: pageWidth * 0.5 },
-        { label: 'Qty', width: pageWidth * 0.25 },
-        { label: 'Unit', width: pageWidth * 0.25 },
+    const dims = day.dimensions as { activity: string; qty: number; unit?: string }[] | null;
+    if (dims && Array.isArray(dims) && dims.length > 0) {
+      subHeader('Dimensions');
+      const cols = [
+        { label: 'Activity', w: PW * 0.5 },
+        { label: 'Qty', w: PW * 0.25 },
+        { label: 'Unit', w: PW * 0.25 },
       ];
-      drawTableHeader(dimCols);
-      dimensions.forEach((row, i) => {
-        if (row.activity) {
-          drawTableRow([
-            { value: row.activity, width: pageWidth * 0.5 },
-            { value: String(row.qty), width: pageWidth * 0.25 },
-            { value: row.unit || '', width: pageWidth * 0.25 },
-          ], i % 2 === 1);
-        }
+      tHead(cols);
+      dims.forEach((r, i) => {
+        if (r.activity) tRow([
+          { val: r.activity, w: PW * 0.5 },
+          { val: String(r.qty), w: PW * 0.25 },
+          { val: r.unit || '', w: PW * 0.25 },
+        ], i % 2 === 1);
       });
       doc.moveDown(0.3);
     }
 
     // Further Work
     if (day.furtherWork) {
-      ensureSpace(20);
-      doc.fontSize(10).font('Helvetica-Bold').fillColor(GRAY_DARK).text('Further Work Required', leftMargin + 4);
-      doc.moveDown(0.1);
-      if (day.furtherWorkNotes) {
-        doc.fontSize(9).font('Helvetica').fillColor(GRAY_DARK).text(day.furtherWorkNotes, leftMargin + 8, doc.y, { width: pageWidth - 16 });
-      }
-      doc.moveDown(0.3);
+      subHeader('Further Work Required');
+      if (day.furtherWorkNotes) bodyText(day.furtherWorkNotes);
     }
 
     // Photos
     if (day.photos.length > 0) {
-      ensureSpace(20);
-      doc.fontSize(10).font('Helvetica-Bold').fillColor(GRAY_DARK).text(`Photos (${day.photos.length})`, leftMargin + 4);
-      doc.moveDown(0.1);
+      subHeader(`Photos (${day.photos.length})`);
       for (const photo of day.photos) {
-        drawKeyValue(`[${photo.photoStage}]`, photo.fileName || photo.r2Key, 8);
+        kvRow(`[${photo.photoStage.toUpperCase()}]`, photo.fileName || photo.r2Key);
       }
-      doc.moveDown(0.2);
     }
   }
 
   // ─── ADDITIONAL PHOTOS ───
 
-  const faultLevelPhotos = fault.photos.filter((p) => !p.workDayId);
-  if (faultLevelPhotos.length > 0) {
-    drawSectionHeader('Additional Photos');
-    for (const photo of faultLevelPhotos) {
-      drawKeyValue(`[${photo.photoStage}]`, photo.fileName || photo.r2Key);
+  const extra = fault.photos.filter((p) => !p.workDayId);
+  if (extra.length > 0) {
+    sectionBar('Additional Photos');
+    for (const photo of extra) {
+      kvRow(`[${photo.photoStage.toUpperCase()}]`, photo.fileName || photo.r2Key);
     }
   }
 
-  // ─── PAGE FOOTERS (drawn on every page) ───
+  /* ================================================================
+     PAGE FOOTERS — rendered on every page after content is done
+     ================================================================ */
 
-  const generatedAt = formatDateTime(new Date());
-  const totalPages = doc.bufferedPageRange().count;
+  const now = fmtDateTime(new Date());
+  const pages = doc.bufferedPageRange().count;
 
-  for (let i = 0; i < totalPages; i++) {
+  for (let i = 0; i < pages; i++) {
     doc.switchToPage(i);
-    const footerTop = doc.page.height - 30;
 
-    // Divider line
-    doc.moveTo(leftMargin, footerTop).lineTo(leftMargin + pageWidth, footerTop)
-      .strokeColor(GRAY_BORDER).lineWidth(0.5).stroke();
+    // Top accent stripe (skip cover page — it already has one)
+    if (i > 0) {
+      doc.rect(0, 0, doc.page.width, 4).fill(NAVY);
+    }
 
-    // Left: company name
-    doc.fontSize(7).font('Helvetica').fillColor(GRAY_LIGHT)
-      .text('Infrava Private Limited', leftMargin, footerTop + 6, { width: pageWidth / 3, align: 'left' });
+    // Footer
+    const fy = doc.page.height - 40;
+    doc.moveTo(LM, fy).lineTo(LM + PW, fy).lineWidth(0.75).strokeColor(NAVY).stroke();
 
-    // Center: generated timestamp
-    doc.fontSize(7).font('Helvetica').fillColor(GRAY_LIGHT)
-      .text(`Generated: ${generatedAt}`, leftMargin + pageWidth / 3, footerTop + 6, { width: pageWidth / 3, align: 'center' });
-
-    // Right: page number
-    doc.fontSize(7).font('Helvetica').fillColor(GRAY_LIGHT)
-      .text(`Page ${i + 1} of ${totalPages}`, leftMargin + (pageWidth * 2) / 3, footerTop + 6, { width: pageWidth / 3, align: 'right' });
+    doc.fontSize(8).font('Helvetica-Bold').fillColor(NAVY)
+      .text('Infrava Private Limited', LM, fy + 8, { width: PW / 3, align: 'left' });
+    doc.fontSize(8).font('Helvetica').fillColor(GRAY_LIGHT)
+      .text(`Generated: ${now}`, LM + PW / 3, fy + 8, { width: PW / 3, align: 'center' });
+    doc.fontSize(8).font('Helvetica').fillColor(GRAY_LIGHT)
+      .text(`Page ${i + 1} of ${pages}`, LM + (PW * 2) / 3, fy + 8, { width: PW / 3, align: 'right' });
   }
 
   // Finalize
   doc.end();
 
-  // Collect all chunks into a buffer
   const buffer = await new Promise<Buffer>((resolve) => {
     doc.on('end', () => resolve(Buffer.concat(chunks)));
   });
