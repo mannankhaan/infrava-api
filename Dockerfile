@@ -34,4 +34,4 @@ RUN npm install tsx
 
 EXPOSE 4000
 
-CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && npx tsx prisma/seed.ts && node dist/server.js"]
+CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && npx prisma db execute --file prisma/fix-trigger.sql --schema prisma/schema.prisma; npx tsx prisma/seed.ts; node dist/server.js"]
