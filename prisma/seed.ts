@@ -51,7 +51,17 @@ async function main() {
   });
   console.log(`Operative 2: ${operative2.email} (${operative2.id})`);
 
-  // 4. Sample faults
+  // 4. Sample faults (skip if already seeded)
+  const existingFault = await prisma.fault.findUnique({ where: { clientRef: '01722878' } });
+  if (existingFault) {
+    console.log('Faults already seeded — skipping');
+    console.log('\n--- Seed complete ---');
+    console.log('All accounts use password: Test1234!');
+    console.log('Admin login:     admin@infrava.co.in');
+    console.log('Operative login: operative@infrava.co.in');
+    return;
+  }
+
   const fault1 = await prisma.fault.create({
     data: {
       clientRef: '01722878',

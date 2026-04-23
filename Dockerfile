@@ -29,6 +29,9 @@ RUN npx prisma generate
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/assets ./assets
 
+# tsx needed for seed script
+RUN npm install tsx
+
 EXPOSE 4000
 
-CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && node dist/server.js"]
+CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && npx tsx prisma/seed.ts && node dist/server.js"]
