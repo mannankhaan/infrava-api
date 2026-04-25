@@ -51,7 +51,7 @@ export async function generateReport(req: Request, res: Response): Promise<void>
     await sendFaultCompletedEmail({
       to: fault.admin.email,
       name: fault.admin.name,
-      faultRef: fault.clientRef,
+      faultRef: fault.projectRef,
       faultTitle: fault.title,
     });
 

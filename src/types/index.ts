@@ -15,11 +15,17 @@ export interface JwtRefreshPayload {
   tokenId: string;
 }
 
+export interface ManagerPermissions {
+  clients: string[]; // ["*"] or [uuid, ...]
+  features: Record<string, Record<string, boolean>>;
+}
+
 export interface AuthUser {
   id: string;
   email: string;
   role: UserRole;
   adminId: string | null;
+  permissions?: ManagerPermissions | null;
 }
 
 export interface AuthRequest extends Request {

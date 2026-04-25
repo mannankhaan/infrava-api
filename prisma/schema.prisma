@@ -12,6 +12,7 @@ datasource db {
 enum UserRole {
   SUPER_ADMIN
   ADMIN
+  MANAGER
   OPERATIVE
 }
 
@@ -61,7 +62,9 @@ model User {
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz()
 
-  // Self-referencing: admin → operatives
+  permissions Json?    @db.JsonB // Manager permissions: { clients, features }
+
+  // Self-referencing: admin → operatives/managers
   admin      User?  @relation("AdminOperatives", fields: [adminId], references: [id])
   operatives User[] @relation("AdminOperatives")
 
@@ -69,6 +72,9 @@ model User {
   adminFaults             Fault[] @relation("AdminFaults")
   createdFaults           Fault[] @relation("FaultCreator")
   operativeAssignedFaults Fault[] @relation("FaultOperative")
+
+  // Client relations
+  clients Client[] @relation("AdminClients")
 
   // Other relations
   refreshTokens            RefreshToken[]
@@ -83,8 +89,82 @@ model User {
   processedDeletions DataDeletionRequest[] @relation("DeletionProcessor")
 
   quotations Quotation[] @relation("AdminQuotations")
+  formTemplates FormTemplate[] @relation("AdminFormTemplates")
+  projectSequences ProjectSequence[] @relation("AdminProjectSequences")
 
   @@map("users")
+}
+
+// ─── CLIENTS ────────────────────────────────────────────────────────
+
+model Client {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  adminId            String   @map("admin_id") @db.Uuid
+  name               String
+  address            String?
+  referenceNumber    String?  @map("reference_number")
+  logoR2Key          String?  @map("logo_r2_key")
+  opsContactName     String?  @map("ops_contact_name")
+  opsContactEmail    String?  @map("ops_contact_email")
+  opsContactPhone    String?  @map("ops_contact_phone")
+  comContactName     String?  @map("com_contact_name")
+  comContactEmail    String?  @map("com_contact_email")
+  comContactPhone    String?  @map("com_contact_phone")
+  email1             String?
+  email2             String?
+  projectCode        String?  @map("project_code")
+  projectDescription String?  @map("project_description")
+  contractPdfR2Key   String?  @map("contract_pdf_r2_key")
+  clientRefPrefix    String?  @map("client_ref_prefix")
+  isActive           Boolean  @default(true) @map("is_active")
+  projectSequence    ProjectSequence?
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  formTemplateId  String?       @map("form_template_id") @db.Uuid
+
+  admin         User            @relation("AdminClients", fields: [adminId], references: [id])
+  faults        Fault[]         @relation("ClientFaults")
+  quotations    Quotation[]     @relation("ClientQuotations")
+  formTemplate  FormTemplate?   @relation("ClientFormTemplate", fields: [formTemplateId], references: [id])
+
+  @@unique([adminId, name])
+  @@map("clients")
+}
+
+// ─── PROJECT SEQUENCES (per-client atomic counters) ─────────────────
+
+model ProjectSequence {
+  id         String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clientId   String @unique @map("client_id") @db.Uuid
+  adminId    String @map("admin_id") @db.Uuid
+  prefix     String
+  lastNumber Int    @default(0) @map("last_number")
+
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  admin  User   @relation("AdminProjectSequences", fields: [adminId], references: [id])
+
+  @@unique([adminId, prefix])
+  @@map("project_sequences")
+}
+
+// ─── FORM TEMPLATES ─────────────────────────────────────────────────
+
+model FormTemplate {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  adminId   String   @map("admin_id") @db.Uuid
+  name      String
+  isActive  Boolean  @default(true) @map("is_active")
+  schema    Json     @db.JsonB
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  admin   User     @relation("AdminFormTemplates", fields: [adminId], references: [id])
+  clients Client[] @relation("ClientFormTemplate")
+  faults  Fault[]  @relation("FaultFormTemplate")
+
+  @@unique([adminId, name])
+  @@map("form_templates")
 }
 
 // ─── FAULTS ─────────────────────────────────────────────────────────
@@ -92,10 +172,14 @@ model User {
 model Fault {
   id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   adminId   String @map("admin_id") @db.Uuid
+  clientId  String? @map("client_id") @db.Uuid
 
-  // Primary display ID (was citadelRef / CITADEL Ref)
-  clientRef  String  @unique @map("client_ref")
-  companyRef String? @map("company_ref") // was ckRef
+  // System-generated human-readable reference (e.g. NR-0001)
+  projectRef String  @unique @map("project_ref")
+
+  // Optional external references from client
+  clientRef  String? @map("client_ref")
+  companyRef String? @map("company_ref")
 
   // Fault info
   title       String
@@ -146,6 +230,11 @@ model Fault {
   furtherWork      Boolean? @map("further_work")
   furtherWorkNotes String?  @map("further_work_notes")
 
+  // Dynamic form fields
+  customFields    Json?   @map("custom_fields") @db.JsonB
+  formTemplateId  String? @map("form_template_id") @db.Uuid
+  formTemplate    FormTemplate? @relation("FaultFormTemplate", fields: [formTemplateId], references: [id])
+
   // Status & Ownership
   status               FaultStatus @default(CREATED)
   createdBy            String      @map("created_by") @db.Uuid
@@ -160,6 +249,7 @@ model Fault {
 
   // Relations
   admin             User            @relation("AdminFaults", fields: [adminId], references: [id])
+  client            Client?         @relation("ClientFaults", fields: [clientId], references: [id])
   creator           User            @relation("FaultCreator", fields: [createdBy], references: [id])
   assignedOperative User?           @relation("FaultOperative", fields: [assignedOperativeId], references: [id])
   photos            FaultPhoto[]
@@ -355,14 +445,16 @@ model DataDeletionRequest {
 model Quotation {
   id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   adminId         String          @map("admin_id") @db.Uuid
+  clientId        String?         @map("client_id") @db.Uuid
   title           String
   workDescription String          @map("work_description")
   status          QuotationStatus @default(DRAFT)
   createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz()
 
-  admin User            @relation("AdminQuotations", fields: [adminId], references: [id])
-  items QuotationItem[]
+  admin  User            @relation("AdminQuotations", fields: [adminId], references: [id])
+  client Client?         @relation("ClientQuotations", fields: [clientId], references: [id])
+  items  QuotationItem[]
 
   @@map("quotations")
 }

@@ -80,7 +80,7 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
     margins: { top: 50, bottom: 80, left: LM, right: RM },
     bufferPages: true,
     info: {
-      Title: `Site Report — ${fault.clientRef}`,
+      Title: `Site Report — ${fault.projectRef}`,
       Author: fault.admin.companyName || 'Infrava',
     },
   });
@@ -249,7 +249,7 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
   doc.rect(LM, titleBarY, PW, 28).fill(NAVY);
   doc.fontSize(13).font('Helvetica-Bold').fillColor(WHITE).text('SITE VISIT REPORT', LM + 14, titleBarY + 7, { width: PW * 0.6 });
   doc.fontSize(9).font('Helvetica').fillColor('#A0B4CF').text(
-    `${fault.clientRef}  |  ${fmtDate(fault.faultDate)}`,
+    `${fault.projectRef}  |  ${fmtDate(fault.faultDate)}`,
     LM + 14, titleBarY + 8, { width: PW - 28, align: 'right' }
   );
 
@@ -260,7 +260,7 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
   // ════════════════════════════════════════════════════════════
 
   sectionBar('Job Details');
-  kvTwo('Client Ref', fault.clientRef, 'Company Ref', fault.companyRef || '—');
+  kvTwo('Project Ref', fault.projectRef, 'Client Ref', fault.clientRef || '—');
   kvTwo('Fault Date', fmtDate(fault.faultDate), 'Priority', fault.priority || '—');
   kvTwo('Work Type', fault.workType || '—', 'Status', fault.status.replace(/_/g, ' '));
   if (fault.title) kv('Title', fault.title);
@@ -488,7 +488,7 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
 
   doc.end();
   const buffer = await new Promise<Buffer>((resolve) => { doc.on('end', () => resolve(Buffer.concat(chunks))); });
-  const r2Key = `reports/${fault.adminId}/${fault.clientRef}.pdf`;
+  const r2Key = `reports/${fault.adminId}/${fault.projectRef}.pdf`;
   await uploadFile(r2Key, buffer);
   return r2Key;
 }

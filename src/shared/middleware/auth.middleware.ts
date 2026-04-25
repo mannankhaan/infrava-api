@@ -26,7 +26,7 @@ export async function authMiddleware(
     // DB check: is_active = true (deactivated users locked out immediately)
     const user = await prisma.user.findUnique({
       where: { id: payload.sub },
-      select: { id: true, email: true, role: true, adminId: true, isActive: true, isApproved: true },
+      select: { id: true, email: true, role: true, adminId: true, isActive: true, isApproved: true, permissions: true },
     });
 
     if (!user || !user.isActive) {
@@ -34,7 +34,7 @@ export async function authMiddleware(
       return;
     }
 
-    if (user.role === 'ADMIN' && !user.isApproved) {
+    if ((user.role === 'ADMIN' || user.role === 'MANAGER') && !user.isApproved) {
       res.status(403).json({ success: false, error: 'Account pending approval' });
       return;
     }
@@ -44,6 +44,7 @@ export async function authMiddleware(
       email: user.email,
       role: user.role,
       adminId: user.adminId,
+      permissions: user.permissions as any,
     };
 
     next();

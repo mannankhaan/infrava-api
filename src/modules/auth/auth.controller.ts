@@ -20,7 +20,7 @@ export async function login(req: Request, res: Response): Promise<void> {
         id: true, email: true, name: true, role: true, avatarUrl: true,
         passwordHash: true, isActive: true, adminId: true, emailVerified: true, isApproved: true,
         companyName: true, companyAddress: true, companyWebsite: true,
-        companyPhone: true, companyEmail: true, companyAbn: true, logoUrl: true,
+        companyPhone: true, companyEmail: true, companyAbn: true, logoUrl: true, permissions: true,
       },
     });
 
@@ -35,7 +35,7 @@ export async function login(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    // Admins must verify email before logging in (operatives skip this)
+    // Admins must verify email before logging in (operatives/managers skip this)
     if (user.role === 'ADMIN' && !user.emailVerified) {
       res.status(403).json({ success: false, error: 'Please verify your email before logging in' });
       return;
@@ -73,6 +73,7 @@ export async function login(req: Request, res: Response): Promise<void> {
           id: user.id, email: user.email, name: user.name, role: user.role, avatarUrl: user.avatarUrl,
           companyName: user.companyName, companyAddress: user.companyAddress, companyWebsite: user.companyWebsite,
           companyPhone: user.companyPhone, companyEmail: user.companyEmail, companyAbn: user.companyAbn, logoUrl: user.logoUrl,
+          permissions: user.permissions,
         },
       },
     });

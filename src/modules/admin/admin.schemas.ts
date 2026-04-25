@@ -1,7 +1,86 @@
 import { z } from 'zod';
 
+// ─── Clients ───────────────────────────────────────────────────────
+
+export const createClientSchema = z.object({
+  name: z.string().min(1, 'Client name is required'),
+  address: z.string().optional(),
+  logoR2Key: z.string().optional(),
+  opsContactName: z.string().optional(),
+  opsContactEmail: z.string().email().optional().or(z.literal('')),
+  opsContactPhone: z.string().optional(),
+  comContactName: z.string().optional(),
+  comContactEmail: z.string().email().optional().or(z.literal('')),
+  comContactPhone: z.string().optional(),
+});
+
+export const updateClientSchema = createClientSchema.partial();
+
+export type CreateClientInput = z.infer<typeof createClientSchema>;
+export type UpdateClientInput = z.infer<typeof updateClientSchema>;
+
+// ─── Managers ──────────────────────────────────────────────────────
+
+export const createManagerSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+  email: z.string().email('Invalid email'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+  permissions: z.object({
+    clients: z.array(z.string()),
+    features: z.record(z.string(), z.record(z.string(), z.boolean())),
+  }).optional(),
+});
+
+export const updateManagerPermissionsSchema = z.object({
+  permissions: z.object({
+    clients: z.array(z.string()),
+    features: z.record(z.string(), z.record(z.string(), z.boolean())),
+  }),
+});
+
+export type CreateManagerInput = z.infer<typeof createManagerSchema>;
+export type UpdateManagerPermissionsInput = z.infer<typeof updateManagerPermissionsSchema>;
+
+// ─── Form Templates ────────────────────────────────────────────────
+
+const formFieldSchema = z.object({
+  key: z.string().min(1),
+  type: z.enum(['text', 'textarea', 'number', 'date', 'datetime', 'boolean', 'select', 'multiselect', 'email', 'phone', 'url']),
+  label: z.string().min(1),
+  required: z.boolean().optional(),
+  source: z.enum(['core', 'custom']),
+  options: z.array(z.string()).optional(),
+  placeholder: z.string().optional(),
+});
+
+const formSectionSchema = z.object({
+  key: z.string().min(1),
+  title: z.string().min(1),
+  fields: z.array(formFieldSchema).min(1),
+});
+
+export const createTemplateSchema = z.object({
+  name: z.string().min(1, 'Template name is required'),
+  schema: z.object({
+    sections: z.array(formSectionSchema).min(1),
+  }),
+});
+
+export const updateTemplateSchema = z.object({
+  name: z.string().min(1).optional(),
+  schema: z.object({
+    sections: z.array(formSectionSchema).min(1),
+  }).optional(),
+});
+
+export type CreateTemplateInput = z.infer<typeof createTemplateSchema>;
+export type UpdateTemplateInput = z.infer<typeof updateTemplateSchema>;
+
+// ─── Faults ────────────────────────────────────────────────────────
+
 export const createFaultSchema = z.object({
-  clientRef: z.string().min(1, 'Client Reference is required'),
+  clientId: z.string().uuid('Client is required'),
+  clientRef: z.string().optional(),
   companyRef: z.string().optional(),
   title: z.string().min(1, 'Title is required'),
   workType: z.string().optional(),
@@ -30,6 +109,8 @@ export const createFaultSchema = z.object({
   contractorName: z.string().optional(),
   contractorEmail: z.string().optional(),
   contractorMobile: z.string().optional(),
+  formTemplateId: z.string().uuid().optional(),
+  customFields: z.record(z.string(), z.unknown()).optional(),
   photos: z.array(
     z.object({
       r2Key: z.string(),
@@ -97,6 +178,7 @@ const estimateItemSchema = z.object({
 });
 
 export const createQuotationSchema = z.object({
+  clientId: z.string().uuid().optional(),
   title: z.string().min(1, 'Title is required'),
   workDescription: z.string().refine(
     (val) => val.trim().split(/\s+/).filter(Boolean).length >= 250,

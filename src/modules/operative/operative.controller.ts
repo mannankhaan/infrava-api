@@ -11,6 +11,7 @@ export async function listFaults(req: AuthRequest, res: Response): Promise<void>
     include: {
       creator: { select: { name: true } },
       admin: { select: { name: true, email: true } },
+      client: { select: { id: true, name: true } },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -24,6 +25,8 @@ export async function getFault(req: AuthRequest, res: Response): Promise<void> {
     include: {
       creator: { select: { name: true } },
       admin: { select: { name: true, email: true } },
+      client: { select: { id: true, name: true } },
+      formTemplate: { select: { id: true, name: true, schema: true } },
       photos: { where: { deletedAt: null, workDayId: null }, orderBy: { uploadedAt: 'asc' } },
       workDays: {
         include: {
@@ -36,7 +39,7 @@ export async function getFault(req: AuthRequest, res: Response): Promise<void> {
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
@@ -49,7 +52,7 @@ export async function updateFault(req: AuthRequest, res: Response): Promise<void
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
@@ -87,7 +90,7 @@ export async function submitFault(req: AuthRequest, res: Response): Promise<void
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
@@ -116,12 +119,12 @@ export async function submitFault(req: AuthRequest, res: Response): Promise<void
       to: fault.admin.email,
       adminName: fault.admin.name,
       operativeName: fault.assignedOperative?.name || 'Operative',
-      faultRef: fault.clientRef,
+      faultRef: fault.projectRef,
       faultTitle: fault.title,
     }).catch((err) => console.error('Failed to send submission email:', err));
   }
 
-  res.json({ success: true, data: { message: 'Fault submitted to Admin for review' } });
+  res.json({ success: true, data: { message: 'Project submitted to Admin for review' } });
 }
 
 // ─── Photo Management ───────────────────────────────────────────────
@@ -132,7 +135,7 @@ export async function presignPhoto(req: AuthRequest, res: Response): Promise<voi
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
@@ -158,7 +161,7 @@ export async function registerPhoto(req: AuthRequest, res: Response): Promise<vo
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
@@ -183,7 +186,7 @@ export async function deletePhoto(req: AuthRequest, res: Response): Promise<void
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
@@ -221,7 +224,7 @@ export async function addWorkDay(req: AuthRequest, res: Response): Promise<void>
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
@@ -264,7 +267,7 @@ export async function recordPunchEvent(req: AuthRequest, res: Response): Promise
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
@@ -334,7 +337,7 @@ export async function updateWorkDay(req: AuthRequest, res: Response): Promise<vo
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 

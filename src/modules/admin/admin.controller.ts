@@ -2,7 +2,7 @@ import { Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../../config/prisma';
 import { env } from '../../config/env';
-import { AuthRequest, UserRole, FaultStatus } from '../../types';
+import { AuthRequest, UserRole, FaultStatus, ManagerPermissions } from '../../types';
 import { findOrCreateUser, ApiError } from '../../shared/services/findOrCreateUser';
 import { sendWelcomeAndTaskEmail, sendTaskNotificationEmail, sendFaultRejectedEmail, sendFaultCompletedEmail } from '../../shared/services/email.service';
 import { parseFaultDocx } from '../../shared/services/docx-parser.service';
@@ -14,26 +14,74 @@ import {
   CreateFaultInput, UpdateFaultInput as AdminUpdateFaultInput,
   ProcessDeletionInput, AdminPresignPhotoInput,
   CreateQuotationInput, UpdateQuotationInput,
+  CreateClientInput, UpdateClientInput,
+  CreateManagerInput, UpdateManagerPermissionsInput,
+  CreateTemplateInput, UpdateTemplateInput,
 } from './admin.schemas';
 import { getPresignedUploadUrl } from '../../shared/services/storage.service';
+import { validateFaultAgainstTemplate, separateFormData } from '../../shared/services/form-validator.service';
+import { resolveUniquePrefix, createProjectSequence, generateProjectRef } from '../../shared/services/project-sequence.service';
+
+/** Resolve the effective admin ID — for managers it's their adminId, for admins it's their own id */
+function getAdminId(req: AuthRequest): string {
+  if (req.user!.role === UserRole.MANAGER) return req.user!.adminId!;
+  return req.user!.id;
+}
+
+/** For managers with client-scoped permissions, add clientId filter to queries */
+function getClientScopeFilter(req: AuthRequest): { clientId?: { in: string[] } } | {} {
+  if (req.user!.role === UserRole.MANAGER && req.user!.permissions) {
+    const perms = req.user!.permissions as ManagerPermissions;
+    if (perms.clients.length > 0 && perms.clients[0] !== '*') {
+      return { clientId: { in: perms.clients } };
+    }
+  }
+  return {};
+}
 
 // ─── Fault CRUD ─────────────────────────────────────────────────────
 
 export async function createFault(req: AuthRequest, res: Response): Promise<void> {
   const input = req.body as CreateFaultInput;
+  const adminId = getAdminId(req);
 
-  // Check uniqueness of clientRef
-  const existing = await prisma.fault.findUnique({ where: { clientRef: input.clientRef } });
-  if (existing) {
-    res.status(400).json({ success: false, error: 'Client Reference already exists' });
+  // clientId is required for projectRef generation
+  if (!input.clientId) {
+    res.status(400).json({ success: false, error: 'Client is required' });
     return;
   }
 
+  // If client has a template, validate against it
+  const client = await prisma.client.findFirst({
+    where: { id: input.clientId, adminId },
+    include: { formTemplate: true },
+  });
+
+  if (!client) {
+    res.status(404).json({ success: false, error: 'Client not found' });
+    return;
+  }
+
+  if (client.formTemplate && client.formTemplate.isActive) {
+    const schema = client.formTemplate.schema as any;
+    const allData: Record<string, unknown> = { ...input, ...(input.customFields || {}) };
+    const validation = validateFaultAgainstTemplate(allData, schema);
+    if (!validation.valid) {
+      res.status(400).json({ success: false, error: validation.errors.join(', ') });
+      return;
+    }
+  }
+
+  // Auto-generate projectRef atomically (e.g. "NR-0001")
+  const projectRef = await generateProjectRef(input.clientId);
+
   const fault = await prisma.fault.create({
     data: {
-      adminId: req.user!.id,
+      adminId,
       createdBy: req.user!.id,
-      clientRef: input.clientRef,
+      clientId: input.clientId,
+      projectRef,
+      clientRef: input.clientRef || undefined,
       companyRef: input.companyRef,
       title: input.title,
       workType: input.workType,
@@ -62,6 +110,8 @@ export async function createFault(req: AuthRequest, res: Response): Promise<void
       contractorName: input.contractorName,
       contractorEmail: input.contractorEmail,
       contractorMobile: input.contractorMobile,
+      formTemplateId: input.formTemplateId,
+      customFields: input.customFields ? (input.customFields as any) : undefined,
       ...(input.photos && input.photos.length > 0 ? {
         photos: {
           create: input.photos.map(p => ({
@@ -80,7 +130,7 @@ export async function createFault(req: AuthRequest, res: Response): Promise<void
       faultId: fault.id,
       changedBy: req.user!.id,
       changeType: 'CREATED',
-      newValue: { clientRef: fault.clientRef } as any,
+      newValue: { projectRef: fault.projectRef } as any,
     },
   });
 
@@ -88,13 +138,15 @@ export async function createFault(req: AuthRequest, res: Response): Promise<void
 }
 
 export async function listFaults(req: AuthRequest, res: Response): Promise<void> {
-  const { status, priority, search } = req.query as Record<string, string>;
+  const { status, priority, search, clientId } = req.query as Record<string, string>;
 
-  const where: Record<string, unknown> = { adminId: req.user!.id };
+  const where: Record<string, unknown> = { adminId: getAdminId(req), ...getClientScopeFilter(req) };
   if (status) where.status = status;
   if (priority) where.priority = priority;
+  if (clientId) where.clientId = clientId === 'none' ? null : clientId;
   if (search) {
     where.OR = [
+      { projectRef: { contains: search, mode: 'insensitive' } },
       { clientRef: { contains: search, mode: 'insensitive' } },
       { title: { contains: search, mode: 'insensitive' } },
       { locationText: { contains: search, mode: 'insensitive' } },
@@ -105,6 +157,7 @@ export async function listFaults(req: AuthRequest, res: Response): Promise<void>
     where: where as any,
     include: {
       assignedOperative: { select: { id: true, name: true, email: true } },
+      client: { select: { id: true, name: true } },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -114,10 +167,12 @@ export async function listFaults(req: AuthRequest, res: Response): Promise<void>
 
 export async function getFault(req: AuthRequest, res: Response): Promise<void> {
   const fault = await prisma.fault.findFirst({
-    where: { id: req.params.id as string, adminId: req.user!.id },
+    where: { id: req.params.id as string, adminId: getAdminId(req) },
     include: {
       admin: { select: { id: true, name: true, email: true } },
+      client: { select: { id: true, name: true } },
       assignedOperative: { select: { id: true, name: true, email: true } },
+      formTemplate: { select: { id: true, name: true, schema: true } },
       photos: { where: { deletedAt: null }, orderBy: { uploadedAt: 'asc' } },
       workDays: { include: { events: { orderBy: { timestamp: 'asc' } } }, orderBy: { dayNumber: 'asc' } },
       auditLog: { orderBy: { changedAt: 'desc' }, take: 20, include: { user: { select: { name: true, role: true } } } },
@@ -125,7 +180,7 @@ export async function getFault(req: AuthRequest, res: Response): Promise<void> {
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
@@ -135,16 +190,16 @@ export async function getFault(req: AuthRequest, res: Response): Promise<void> {
 export async function updateFault(req: AuthRequest, res: Response): Promise<void> {
   const faultId = req.params.id as string;
   const fault = await prisma.fault.findFirst({
-    where: { id: faultId, adminId: req.user!.id },
+    where: { id: faultId, adminId: getAdminId(req) },
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
   if (fault.status !== FaultStatus.CREATED) {
-    res.status(400).json({ success: false, error: 'Can only edit faults in CREATED status' });
+    res.status(400).json({ success: false, error: 'Can only edit projects in CREATED status' });
     return;
   }
 
@@ -171,21 +226,21 @@ export async function updateFault(req: AuthRequest, res: Response): Promise<void
 export async function deleteFault(req: AuthRequest, res: Response): Promise<void> {
   const faultId = req.params.id as string;
   const fault = await prisma.fault.findFirst({
-    where: { id: faultId, adminId: req.user!.id },
+    where: { id: faultId, adminId: getAdminId(req) },
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
   if (fault.status !== FaultStatus.CREATED) {
-    res.status(400).json({ success: false, error: 'Can only delete faults in CREATED status' });
+    res.status(400).json({ success: false, error: 'Can only delete projects in CREATED status' });
     return;
   }
 
   await prisma.fault.delete({ where: { id: faultId } });
-  res.json({ success: true, data: { message: 'Fault deleted' } });
+  res.json({ success: true, data: { message: 'Project deleted' } });
 }
 
 export async function adminPresignPhoto(req: AuthRequest, res: Response): Promise<void> {
@@ -218,18 +273,21 @@ export async function parseDocx(req: AuthRequest, res: Response): Promise<void> 
 // ─── Fault Queue ────────────────────────────────────────────────────
 
 export async function getQueue(req: AuthRequest, res: Response): Promise<void> {
-  const { status } = req.query as Record<string, string>;
+  const { status, clientId } = req.query as Record<string, string>;
 
   const where: Record<string, unknown> = {
-    adminId: req.user!.id,
+    adminId: getAdminId(req),
+    ...getClientScopeFilter(req),
   };
   if (status) where.status = status;
+  if (clientId) where.clientId = clientId === 'none' ? null : clientId;
 
   const faults = await prisma.fault.findMany({
     where: where as any,
     include: {
       assignedOperative: { select: { id: true, name: true, email: true } },
       creator: { select: { id: true, name: true, email: true } },
+      client: { select: { id: true, name: true } },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -241,12 +299,14 @@ export async function getQueueItem(req: AuthRequest, res: Response): Promise<voi
   const fault = await prisma.fault.findFirst({
     where: {
       id: req.params.id as string,
-      adminId: req.user!.id,
+      adminId: getAdminId(req),
     },
     include: {
       admin: { select: { id: true, name: true, email: true } },
+      client: { select: { id: true, name: true } },
       creator: { select: { id: true, name: true, email: true } },
       assignedOperative: { select: { id: true, name: true, email: true } },
+      formTemplate: { select: { id: true, name: true, schema: true } },
       photos: { where: { deletedAt: null }, orderBy: { uploadedAt: 'asc' } },
       workDays: { include: { events: { orderBy: { timestamp: 'asc' } }, photos: { where: { deletedAt: null }, orderBy: { uploadedAt: 'asc' } } }, orderBy: { dayNumber: 'asc' } },
       auditLog: { orderBy: { changedAt: 'desc' }, take: 20, include: { user: { select: { name: true, role: true } } } },
@@ -254,7 +314,7 @@ export async function getQueueItem(req: AuthRequest, res: Response): Promise<voi
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found in your queue' });
+    res.status(404).json({ success: false, error: 'Project not found in your queue' });
     return;
   }
 
@@ -265,16 +325,17 @@ export async function getQueueItem(req: AuthRequest, res: Response): Promise<voi
 
 export async function assignOperative(req: AuthRequest, res: Response): Promise<void> {
   const { email } = req.body as AssignOperativeInput;
+  const adminId = getAdminId(req);
 
   const fault = await prisma.fault.findFirst({
     where: {
       id: req.params.id as string,
-      adminId: req.user!.id,
+      adminId,
     },
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
@@ -285,7 +346,7 @@ export async function assignOperative(req: AuthRequest, res: Response): Promise<
 
   try {
     const { user: operative, isNew, tempPassword } = await findOrCreateUser(
-      email, UserRole.OPERATIVE, req.user!.id, req.user!.email
+      email, UserRole.OPERATIVE, adminId, req.user!.email
     );
 
     await prisma.fault.update({
@@ -308,7 +369,7 @@ export async function assignOperative(req: AuthRequest, res: Response): Promise<
     const emailParams = {
       to: operative.email,
       name: operative.name,
-      faultRef: fault.clientRef,
+      faultRef: fault.projectRef,
       faultTitle: fault.title,
       faultLocation: fault.locationText || '',
       priority: fault.priority || '',
@@ -336,16 +397,17 @@ export async function assignOperative(req: AuthRequest, res: Response): Promise<
 
 export async function reassignOperative(req: AuthRequest, res: Response): Promise<void> {
   const { email, note } = req.body as ReassignInput;
+  const adminId = getAdminId(req);
 
   const fault = await prisma.fault.findFirst({
     where: {
       id: req.params.id as string,
-      adminId: req.user!.id,
+      adminId,
     },
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
@@ -357,7 +419,7 @@ export async function reassignOperative(req: AuthRequest, res: Response): Promis
 
   try {
     const { user: operative, isNew, tempPassword } = await findOrCreateUser(
-      email, UserRole.OPERATIVE, req.user!.id, req.user!.email
+      email, UserRole.OPERATIVE, adminId, req.user!.email
     );
 
     await prisma.fault.update({
@@ -381,7 +443,7 @@ export async function reassignOperative(req: AuthRequest, res: Response): Promis
     const emailParams = {
       to: operative.email,
       name: operative.name,
-      faultRef: fault.clientRef,
+      faultRef: fault.projectRef,
       faultTitle: fault.title,
       faultLocation: fault.locationText || '',
       priority: fault.priority || '',
@@ -410,7 +472,7 @@ export async function rejectFault(req: AuthRequest, res: Response): Promise<void
   const fault = await prisma.fault.findFirst({
     where: {
       id: req.params.id as string,
-      adminId: req.user!.id,
+      adminId: getAdminId(req),
     },
     include: {
       assignedOperative: { select: { name: true, email: true } },
@@ -418,12 +480,12 @@ export async function rejectFault(req: AuthRequest, res: Response): Promise<void
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
   if (fault.status !== FaultStatus.OPERATIVE_SUBMITTED) {
-    res.status(400).json({ success: false, error: 'Can only reject faults in OPERATIVE_SUBMITTED status' });
+    res.status(400).json({ success: false, error: 'Can only reject projects in OPERATIVE_SUBMITTED status' });
     return;
   }
 
@@ -446,20 +508,20 @@ export async function rejectFault(req: AuthRequest, res: Response): Promise<void
     sendFaultRejectedEmail({
       to: fault.assignedOperative.email,
       name: fault.assignedOperative.name,
-      faultRef: fault.clientRef,
+      faultRef: fault.projectRef,
       faultTitle: fault.title,
       rejectionNote: rejectionNote || '',
     }).catch((err) => console.error('Failed to send rejection email:', err));
   }
 
-  res.json({ success: true, data: { message: 'Fault rejected and sent back to operative' } });
+  res.json({ success: true, data: { message: 'Project rejected and sent back to operative' } });
 }
 
 export async function finalSubmit(req: AuthRequest, res: Response): Promise<void> {
   const fault = await prisma.fault.findFirst({
     where: {
       id: req.params.id as string,
-      adminId: req.user!.id,
+      adminId: getAdminId(req),
     },
     include: {
       admin: { select: { id: true, name: true, email: true, avatarUrl: true, companyName: true, companyAddress: true, companyWebsite: true, companyPhone: true, companyEmail: true, companyAbn: true, logoUrl: true } },
@@ -470,12 +532,12 @@ export async function finalSubmit(req: AuthRequest, res: Response): Promise<void
   });
 
   if (!fault) {
-    res.status(404).json({ success: false, error: 'Fault not found' });
+    res.status(404).json({ success: false, error: 'Project not found' });
     return;
   }
 
   if (fault.status !== FaultStatus.OPERATIVE_SUBMITTED) {
-    res.status(400).json({ success: false, error: 'Can only final-submit faults in OPERATIVE_SUBMITTED status' });
+    res.status(400).json({ success: false, error: 'Can only final-submit projects in OPERATIVE_SUBMITTED status' });
     return;
   }
 
@@ -512,20 +574,20 @@ export async function finalSubmit(req: AuthRequest, res: Response): Promise<void
   sendFaultCompletedEmail({
     to: fault.admin.email,
     name: fault.admin.name,
-    faultRef: fault.clientRef,
+    faultRef: fault.projectRef,
     faultTitle: fault.title,
   }).catch((err) => console.error('Failed to send completion email:', err));
 
-  res.json({ success: true, data: { message: 'Fault completed and report generated.' } });
+  res.json({ success: true, data: { message: 'Project completed and report generated.' } });
 }
 
 export async function downloadReport(req: AuthRequest, res: Response): Promise<void> {
   const report = await prisma.eodReport.findFirst({
     where: {
       id: req.params.id as string,
-      adminId: req.user!.id,
+      adminId: getAdminId(req),
     },
-    include: { fault: { select: { clientRef: true } } },
+    include: { fault: { select: { projectRef: true } } },
   });
 
   if (!report || !report.pdfR2Key) {
@@ -535,7 +597,7 @@ export async function downloadReport(req: AuthRequest, res: Response): Promise<v
 
   try {
     const buffer = await getFile(report.pdfR2Key);
-    const filename = `Infrava-Report-${report.fault?.clientRef || 'report'}.pdf`;
+    const filename = `Infrava-Report-${report.fault?.projectRef || 'report'}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buffer);
@@ -548,12 +610,12 @@ export async function downloadReport(req: AuthRequest, res: Response): Promise<v
 
 export async function listOperatives(req: AuthRequest, res: Response): Promise<void> {
   const operatives = await prisma.user.findMany({
-    where: { adminId: req.user!.id, role: UserRole.OPERATIVE, isActive: true },
+    where: { adminId: getAdminId(req), role: UserRole.OPERATIVE, isActive: true },
     select: {
       id: true, name: true, email: true, lastLoginAt: true, createdAt: true,
       operativeAssignedFaults: {
         where: { status: { not: FaultStatus.COMPLETED } },
-        select: { id: true, clientRef: true, title: true, status: true },
+        select: { id: true, projectRef: true, title: true, status: true },
         take: 1,
       },
     },
@@ -587,7 +649,7 @@ export async function createOperative(req: AuthRequest, res: Response): Promise<
       email: email.toLowerCase().trim(),
       passwordHash,
       role: UserRole.OPERATIVE,
-      adminId: req.user!.id,
+      adminId: getAdminId(req),
     },
     select: { id: true, name: true, email: true, role: true, createdAt: true },
   });
@@ -600,7 +662,7 @@ export async function updateOperative(req: AuthRequest, res: Response): Promise<
   const data = req.body as UpdateOperativeInput;
 
   const operative = await prisma.user.findFirst({
-    where: { id, adminId: req.user!.id, role: UserRole.OPERATIVE },
+    where: { id, adminId: getAdminId(req), role: UserRole.OPERATIVE },
   });
   if (!operative) {
     res.status(404).json({ success: false, error: 'Operative not found' });
@@ -623,7 +685,7 @@ export async function deleteOperative(req: AuthRequest, res: Response): Promise<
   const id = req.params.id as string;
 
   const operative = await prisma.user.findFirst({
-    where: { id, adminId: req.user!.id, role: UserRole.OPERATIVE },
+    where: { id, adminId: getAdminId(req), role: UserRole.OPERATIVE },
   });
   if (!operative) {
     res.status(404).json({ success: false, error: 'Operative not found' });
@@ -637,26 +699,29 @@ export async function deleteOperative(req: AuthRequest, res: Response): Promise<
 // ─── Analytics ──────────────────────────────────────────────────────
 
 export async function getAnalytics(req: AuthRequest, res: Response): Promise<void> {
-  const adminId = req.user!.id;
+  const adminId = getAdminId(req);
+  const clientId = req.query.clientId as string | undefined;
+  const clientFilter = clientId ? { clientId: clientId === 'none' ? null : clientId } : getClientScopeFilter(req);
 
+  const baseWhere = { adminId, ...clientFilter } as any;
   const [total, byStatus, byPriority, overdue, completedCount, byWorkType] = await Promise.all([
-    prisma.fault.count({ where: { adminId } }),
-    prisma.fault.groupBy({ by: ['status'], where: { adminId }, _count: true }),
-    prisma.fault.groupBy({ by: ['priority'], where: { adminId }, _count: true }),
+    prisma.fault.count({ where: baseWhere }),
+    prisma.fault.groupBy({ by: ['status'], where: baseWhere, _count: true }),
+    prisma.fault.groupBy({ by: ['priority'], where: baseWhere, _count: true }),
     prisma.fault.count({
       where: {
-        adminId,
+        ...baseWhere,
         status: { notIn: [FaultStatus.COMPLETED] },
         plannedCompletion: { lt: new Date() },
       },
     }),
-    prisma.fault.count({ where: { adminId, status: FaultStatus.COMPLETED } }),
-    prisma.fault.groupBy({ by: ['workType'], where: { adminId }, _count: true }),
+    prisma.fault.count({ where: { ...baseWhere, status: FaultStatus.COMPLETED } }),
+    prisma.fault.groupBy({ by: ['workType'], where: baseWhere, _count: true }),
   ]);
 
   // Completed faults for avg completion time
   const completedFaults = await prisma.fault.findMany({
-    where: { adminId, status: FaultStatus.COMPLETED, completedAt: { not: null } },
+    where: { ...baseWhere, status: FaultStatus.COMPLETED, completedAt: { not: null } },
     select: { createdAt: true, completedAt: true },
   });
 
@@ -671,7 +736,7 @@ export async function getAnalytics(req: AuthRequest, res: Response): Promise<voi
 
   // Work day hours (PUNCH_IN to PUNCH_OUT)
   const workDaysWithEvents = await prisma.workDay.findMany({
-    where: { fault: { adminId }, isLocked: true },
+    where: { fault: { ...baseWhere }, isLocked: true },
     include: { events: { orderBy: { timestamp: 'asc' } } },
   });
 
@@ -771,10 +836,14 @@ export async function getAnalytics(req: AuthRequest, res: Response): Promise<voi
 // ─── Reports ────────────────────────────────────────────────────────
 
 export async function listReports(req: AuthRequest, res: Response): Promise<void> {
+  const clientId = req.query.clientId as string | undefined;
   const reports = await prisma.eodReport.findMany({
-    where: { adminId: req.user!.id },
+    where: {
+      adminId: getAdminId(req),
+      ...(clientId && { fault: { clientId } }),
+    },
     include: {
-      fault: { select: { clientRef: true, title: true, status: true } },
+      fault: { select: { projectRef: true, title: true, status: true } },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -785,10 +854,16 @@ export async function listReports(req: AuthRequest, res: Response): Promise<void
 // ─── Audit Logs ─────────────────────────────────────────────────────
 
 export async function listAuditLogs(req: AuthRequest, res: Response): Promise<void> {
+  const clientId = req.query.clientId as string | undefined;
   const logs = await prisma.faultAuditLog.findMany({
-    where: { fault: { adminId: req.user!.id } },
+    where: {
+      fault: {
+        adminId: getAdminId(req),
+        ...(clientId && { clientId }),
+      },
+    },
     include: {
-      fault: { select: { clientRef: true, title: true } },
+      fault: { select: { projectRef: true, title: true } },
       user: { select: { name: true, role: true } },
     },
     orderBy: { changedAt: 'desc' },
@@ -803,7 +878,7 @@ export async function listAuditLogs(req: AuthRequest, res: Response): Promise<vo
 export async function listDeletionRequests(req: AuthRequest, res: Response): Promise<void> {
   const requests = await prisma.dataDeletionRequest.findMany({
     where: {
-      target: { adminId: req.user!.id },
+      target: { adminId: getAdminId(req) },
     },
     include: {
       requester: { select: { name: true, email: true } },
@@ -820,7 +895,7 @@ export async function processDeletionRequest(req: AuthRequest, res: Response): P
   const { status, note } = req.body as ProcessDeletionInput;
 
   const request = await prisma.dataDeletionRequest.findFirst({
-    where: { id, target: { adminId: req.user!.id } },
+    where: { id, target: { adminId: getAdminId(req) } },
   });
 
   if (!request) {
@@ -857,11 +932,12 @@ export async function processDeletionRequest(req: AuthRequest, res: Response): P
 // ─── Quotations (Addons) ───────────────────────────────────────────
 
 export async function createQuotation(req: AuthRequest, res: Response): Promise<void> {
-  const { title, workDescription, status, items } = req.body as CreateQuotationInput;
+  const { clientId, title, workDescription, status, items } = req.body as CreateQuotationInput;
 
   const quotation = await prisma.quotation.create({
     data: {
-      adminId: req.user!.id,
+      adminId: getAdminId(req),
+      clientId,
       title,
       workDescription,
       status: status || 'DRAFT',
@@ -884,8 +960,9 @@ export async function createQuotation(req: AuthRequest, res: Response): Promise<
 }
 
 export async function listQuotations(req: AuthRequest, res: Response): Promise<void> {
+  const clientId = req.query.clientId as string | undefined;
   const quotations = await prisma.quotation.findMany({
-    where: { adminId: req.user!.id },
+    where: { adminId: getAdminId(req), ...(clientId ? { clientId: clientId === 'none' ? null : clientId } : getClientScopeFilter(req)) } as any,
     include: { items: true },
     orderBy: { createdAt: 'desc' },
   });
@@ -901,7 +978,7 @@ export async function listQuotations(req: AuthRequest, res: Response): Promise<v
 
 export async function getQuotation(req: AuthRequest, res: Response): Promise<void> {
   const quotation = await prisma.quotation.findFirst({
-    where: { id: req.params.id as string, adminId: req.user!.id },
+    where: { id: req.params.id as string, adminId: getAdminId(req) },
     include: { items: { orderBy: { itemNo: 'asc' } } },
   });
 
@@ -916,7 +993,7 @@ export async function getQuotation(req: AuthRequest, res: Response): Promise<voi
 
 export async function updateQuotation(req: AuthRequest, res: Response): Promise<void> {
   const quotation = await prisma.quotation.findFirst({
-    where: { id: req.params.id as string, adminId: req.user!.id },
+    where: { id: req.params.id as string, adminId: getAdminId(req) },
   });
 
   if (!quotation) {
@@ -968,7 +1045,7 @@ export async function updateQuotation(req: AuthRequest, res: Response): Promise<
 
 export async function deleteQuotation(req: AuthRequest, res: Response): Promise<void> {
   const quotation = await prisma.quotation.findFirst({
-    where: { id: req.params.id as string, adminId: req.user!.id },
+    where: { id: req.params.id as string, adminId: getAdminId(req) },
   });
 
   if (!quotation) {
@@ -983,4 +1060,401 @@ export async function deleteQuotation(req: AuthRequest, res: Response): Promise<
 
   await prisma.quotation.delete({ where: { id: quotation.id } });
   res.json({ success: true, data: { message: 'Quotation deleted' } });
+}
+
+// ─── Client CRUD ───────────────────────────────────────────────────
+
+export async function presignClientLogo(req: AuthRequest, res: Response): Promise<void> {
+  const { contentType, fileName } = req.body as AdminPresignPhotoInput;
+  const uniqueId = `logo_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+  const cleanName = fileName ? fileName.replace(/[^a-zA-Z0-9.-]/g, '_') : 'logo';
+  const r2Key = `client-logos/${getAdminId(req)}/${uniqueId}-${cleanName}`;
+  const { url } = await getPresignedUploadUrl(r2Key, contentType);
+  res.json({ success: true, data: { uploadUrl: url, r2Key } });
+}
+
+export async function createClient(req: AuthRequest, res: Response): Promise<void> {
+  const input = req.body as CreateClientInput;
+  const adminId = getAdminId(req);
+
+  const existing = await prisma.client.findFirst({
+    where: { adminId, name: input.name },
+  });
+  if (existing) {
+    res.status(400).json({ success: false, error: 'Client with this name already exists' });
+    return;
+  }
+
+  // Auto-generate a unique prefix from client name (e.g. "Network Rail" → "NR")
+  const prefix = await resolveUniquePrefix(adminId, input.name);
+
+  const client = await prisma.client.create({
+    data: {
+      adminId,
+      name: input.name,
+      address: input.address || undefined,
+      logoR2Key: input.logoR2Key || undefined,
+      clientRefPrefix: prefix,
+      opsContactName: input.opsContactName || undefined,
+      opsContactEmail: input.opsContactEmail || undefined,
+      opsContactPhone: input.opsContactPhone || undefined,
+      comContactName: input.comContactName || undefined,
+      comContactEmail: input.comContactEmail || undefined,
+      comContactPhone: input.comContactPhone || undefined,
+    },
+  });
+
+  // Create the project sequence row for this client
+  await createProjectSequence(adminId, client.id, prefix);
+
+  res.status(201).json({ success: true, data: client });
+}
+
+export async function listClients(req: AuthRequest, res: Response): Promise<void> {
+  const adminId = getAdminId(req);
+  const clients = await prisma.client.findMany({
+    where: { adminId, isActive: true },
+    include: {
+      _count: { select: { faults: true, quotations: true } },
+      formTemplate: { select: { id: true, name: true } },
+    },
+    orderBy: { name: 'asc' },
+  });
+
+  res.json({ success: true, data: clients });
+}
+
+export async function getClient(req: AuthRequest, res: Response): Promise<void> {
+  const client = await prisma.client.findFirst({
+    where: { id: req.params.clientId as string, adminId: getAdminId(req) },
+    include: {
+      _count: { select: { faults: true, quotations: true } },
+      formTemplate: { select: { id: true, name: true } },
+    },
+  });
+
+  if (!client) {
+    res.status(404).json({ success: false, error: 'Client not found' });
+    return;
+  }
+
+  res.json({ success: true, data: client });
+}
+
+export async function updateClient(req: AuthRequest, res: Response): Promise<void> {
+  const client = await prisma.client.findFirst({
+    where: { id: req.params.clientId as string, adminId: getAdminId(req) },
+  });
+
+  if (!client) {
+    res.status(404).json({ success: false, error: 'Client not found' });
+    return;
+  }
+
+  const input = req.body as UpdateClientInput;
+  const updated = await prisma.client.update({
+    where: { id: client.id },
+    data: {
+      ...(input.name !== undefined && { name: input.name }),
+      ...(input.address !== undefined && { address: input.address || null }),
+      ...(input.logoR2Key !== undefined && { logoR2Key: input.logoR2Key || null }),
+      ...(input.opsContactName !== undefined && { opsContactName: input.opsContactName || null }),
+      ...(input.opsContactEmail !== undefined && { opsContactEmail: input.opsContactEmail || null }),
+      ...(input.opsContactPhone !== undefined && { opsContactPhone: input.opsContactPhone || null }),
+      ...(input.comContactName !== undefined && { comContactName: input.comContactName || null }),
+      ...(input.comContactEmail !== undefined && { comContactEmail: input.comContactEmail || null }),
+      ...(input.comContactPhone !== undefined && { comContactPhone: input.comContactPhone || null }),
+    },
+  });
+
+  res.json({ success: true, data: updated });
+}
+
+export async function deleteClient(req: AuthRequest, res: Response): Promise<void> {
+  const client = await prisma.client.findFirst({
+    where: { id: req.params.clientId as string, adminId: getAdminId(req) },
+  });
+
+  if (!client) {
+    res.status(404).json({ success: false, error: 'Client not found' });
+    return;
+  }
+
+  await prisma.client.update({ where: { id: client.id }, data: { isActive: false } });
+  res.json({ success: true, data: { message: 'Client deactivated' } });
+}
+
+export async function uploadContract(req: AuthRequest, res: Response): Promise<void> {
+  const client = await prisma.client.findFirst({
+    where: { id: req.params.clientId as string, adminId: getAdminId(req) },
+  });
+
+  if (!client) {
+    res.status(404).json({ success: false, error: 'Client not found' });
+    return;
+  }
+
+  const r2Key = `contracts/${client.id}/${Date.now()}.pdf`;
+  const { url } = await getPresignedUploadUrl(r2Key, 'application/pdf');
+
+  await prisma.client.update({
+    where: { id: client.id },
+    data: { contractPdfR2Key: r2Key },
+  });
+
+  res.json({ success: true, data: { uploadUrl: url, r2Key } });
+}
+
+export async function listClientFaults(req: AuthRequest, res: Response): Promise<void> {
+  const clientId = req.params.clientId as string;
+  const client = await prisma.client.findFirst({
+    where: { id: clientId, adminId: getAdminId(req) },
+  });
+  if (!client) {
+    res.status(404).json({ success: false, error: 'Client not found' });
+    return;
+  }
+
+  const faults = await prisma.fault.findMany({
+    where: { clientId, adminId: getAdminId(req) },
+    include: {
+      assignedOperative: { select: { id: true, name: true, email: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  res.json({ success: true, data: faults });
+}
+
+export async function getClientAnalytics(req: AuthRequest, res: Response): Promise<void> {
+  const clientId = req.params.clientId as string;
+  const adminId = getAdminId(req);
+
+  const client = await prisma.client.findFirst({ where: { id: clientId, adminId } });
+  if (!client) {
+    res.status(404).json({ success: false, error: 'Client not found' });
+    return;
+  }
+
+  const [total, completed, overdue, byStatus] = await Promise.all([
+    prisma.fault.count({ where: { adminId, clientId } }),
+    prisma.fault.count({ where: { adminId, clientId, status: FaultStatus.COMPLETED } }),
+    prisma.fault.count({
+      where: { adminId, clientId, status: { notIn: [FaultStatus.COMPLETED] }, plannedCompletion: { lt: new Date() } },
+    }),
+    prisma.fault.groupBy({ by: ['status'], where: { adminId, clientId }, _count: true }),
+  ]);
+
+  res.json({
+    success: true,
+    data: {
+      total,
+      completed,
+      overdue,
+      inProgress: total - completed,
+      byStatus: byStatus.map((s) => ({ status: s.status, count: s._count })),
+    },
+  });
+}
+
+// ─── Template CRUD (Standalone) ────────────────────────────────────
+
+export async function listTemplates(req: AuthRequest, res: Response): Promise<void> {
+  const adminId = getAdminId(req);
+  const templates = await prisma.formTemplate.findMany({
+    where: { adminId, isActive: true },
+    include: { _count: { select: { clients: true } } },
+    orderBy: { name: 'asc' },
+  });
+
+  res.json({ success: true, data: templates });
+}
+
+export async function getTemplate(req: AuthRequest, res: Response): Promise<void> {
+  const template = await prisma.formTemplate.findFirst({
+    where: { id: req.params.id as string, adminId: getAdminId(req), isActive: true },
+    include: { _count: { select: { clients: true } } },
+  });
+
+  if (!template) {
+    res.status(404).json({ success: false, error: 'Template not found' });
+    return;
+  }
+
+  res.json({ success: true, data: template });
+}
+
+export async function createTemplate(req: AuthRequest, res: Response): Promise<void> {
+  const adminId = getAdminId(req);
+  const input = req.body as CreateTemplateInput;
+
+  const existing = await prisma.formTemplate.findFirst({
+    where: { adminId, name: input.name, isActive: true },
+  });
+  if (existing) {
+    res.status(400).json({ success: false, error: 'A template with this name already exists' });
+    return;
+  }
+
+  const template = await prisma.formTemplate.create({
+    data: {
+      adminId,
+      name: input.name,
+      schema: input.schema as any,
+    },
+  });
+
+  res.status(201).json({ success: true, data: template });
+}
+
+export async function updateTemplate(req: AuthRequest, res: Response): Promise<void> {
+  const template = await prisma.formTemplate.findFirst({
+    where: { id: req.params.id as string, adminId: getAdminId(req), isActive: true },
+  });
+
+  if (!template) {
+    res.status(404).json({ success: false, error: 'Template not found' });
+    return;
+  }
+
+  const input = req.body as UpdateTemplateInput;
+
+  // If name is changing, check for duplicates
+  if (input.name && input.name !== template.name) {
+    const existing = await prisma.formTemplate.findFirst({
+      where: { adminId: getAdminId(req), name: input.name, isActive: true, id: { not: template.id } },
+    });
+    if (existing) {
+      res.status(400).json({ success: false, error: 'A template with this name already exists' });
+      return;
+    }
+  }
+
+  const updated = await prisma.formTemplate.update({
+    where: { id: template.id },
+    data: {
+      ...(input.name ? { name: input.name } : {}),
+      ...(input.schema ? { schema: input.schema as any } : {}),
+    },
+  });
+
+  res.json({ success: true, data: updated });
+}
+
+export async function deleteTemplate(req: AuthRequest, res: Response): Promise<void> {
+  const template = await prisma.formTemplate.findFirst({
+    where: { id: req.params.id as string, adminId: getAdminId(req), isActive: true },
+  });
+
+  if (!template) {
+    res.status(404).json({ success: false, error: 'Template not found' });
+    return;
+  }
+
+  // Unlink any clients using this template
+  await prisma.client.updateMany({
+    where: { formTemplateId: template.id },
+    data: { formTemplateId: null },
+  });
+
+  await prisma.formTemplate.update({
+    where: { id: template.id },
+    data: { isActive: false },
+  });
+
+  res.json({ success: true });
+}
+
+// ─── Manager CRUD ──────────────────────────────────────────────────
+
+export async function createManager(req: AuthRequest, res: Response): Promise<void> {
+  // Only ADMIN can create managers (not other managers)
+  if (req.user!.role !== UserRole.ADMIN) {
+    res.status(403).json({ success: false, error: 'Only admins can create managers' });
+    return;
+  }
+
+  const { name, email, password, permissions } = req.body as CreateManagerInput;
+
+  const existing = await prisma.user.findUnique({ where: { email: email.toLowerCase().trim() } });
+  if (existing) {
+    res.status(400).json({ success: false, error: 'Email already in use' });
+    return;
+  }
+
+  const passwordHash = await bcrypt.hash(password, env.BCRYPT_SALT_ROUNDS);
+  const manager = await prisma.user.create({
+    data: {
+      name,
+      email: email.toLowerCase().trim(),
+      passwordHash,
+      role: UserRole.MANAGER,
+      adminId: req.user!.id,
+      isApproved: true,
+      permissions: permissions ? (permissions as any) : undefined,
+    },
+    select: { id: true, name: true, email: true, role: true, permissions: true, createdAt: true },
+  });
+
+  res.status(201).json({ success: true, data: manager });
+}
+
+export async function listManagers(req: AuthRequest, res: Response): Promise<void> {
+  if (req.user!.role !== UserRole.ADMIN) {
+    res.status(403).json({ success: false, error: 'Only admins can list managers' });
+    return;
+  }
+
+  const managers = await prisma.user.findMany({
+    where: { adminId: req.user!.id, role: UserRole.MANAGER, isActive: true },
+    select: { id: true, name: true, email: true, permissions: true, lastLoginAt: true, createdAt: true },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  res.json({ success: true, data: managers });
+}
+
+export async function updateManagerPermissions(req: AuthRequest, res: Response): Promise<void> {
+  if (req.user!.role !== UserRole.ADMIN) {
+    res.status(403).json({ success: false, error: 'Only admins can update manager permissions' });
+    return;
+  }
+
+  const id = req.params.id as string;
+  const { permissions } = req.body as UpdateManagerPermissionsInput;
+
+  const manager = await prisma.user.findFirst({
+    where: { id, adminId: req.user!.id, role: UserRole.MANAGER },
+  });
+  if (!manager) {
+    res.status(404).json({ success: false, error: 'Manager not found' });
+    return;
+  }
+
+  const updated = await prisma.user.update({
+    where: { id },
+    data: { permissions: permissions as any },
+    select: { id: true, name: true, email: true, permissions: true },
+  });
+
+  res.json({ success: true, data: updated });
+}
+
+export async function deleteManager(req: AuthRequest, res: Response): Promise<void> {
+  if (req.user!.role !== UserRole.ADMIN) {
+    res.status(403).json({ success: false, error: 'Only admins can delete managers' });
+    return;
+  }
+
+  const id = req.params.id as string;
+  const manager = await prisma.user.findFirst({
+    where: { id, adminId: req.user!.id, role: UserRole.MANAGER },
+  });
+  if (!manager) {
+    res.status(404).json({ success: false, error: 'Manager not found' });
+    return;
+  }
+
+  await prisma.user.update({ where: { id }, data: { isActive: false } });
+  res.json({ success: true, data: { message: 'Manager deactivated' } });
 }
