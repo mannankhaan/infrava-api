@@ -8,6 +8,21 @@ async function main() {
 
   const passwordHash = await bcrypt.hash('Test1234!', 12);
 
+  // 0. Super Admin (Infrava platform team)
+  const superAdmin = await prisma.user.upsert({
+    where: { email: 'superadmin@infrava.co.in' },
+    update: {},
+    create: {
+      name: 'Infrava Super Admin',
+      email: 'superadmin@infrava.co.in',
+      passwordHash,
+      role: UserRole.SUPER_ADMIN,
+      emailVerified: true,
+      isApproved: true,
+    },
+  });
+  console.log(`Super Admin: ${superAdmin.email} (${superAdmin.id})`);
+
   // 1. Admin (primary user — self-signed-up contractor)
   const admin = await prisma.user.upsert({
     where: { email: 'admin@infrava.co.in' },
@@ -18,7 +33,13 @@ async function main() {
       passwordHash,
       role: UserRole.ADMIN,
       emailVerified: true,
+      isApproved: true,
       companyName: 'T4 Engineering Ltd',
+      companyAddress: '4a Bramhall Moor Technology Park, SK7 5BW',
+      companyWebsite: 'www.t4engineering.co.uk',
+      companyPhone: '0161 302 3670',
+      companyEmail: 'service@t4engineering.co.uk',
+      companyAbn: 'GB123456789',
     },
   });
   console.log(`Admin: ${admin.email} (${admin.id})`);
@@ -33,6 +54,7 @@ async function main() {
       passwordHash,
       role: UserRole.OPERATIVE,
       adminId: admin.id,
+      isApproved: true,
     },
   });
   console.log(`Operative: ${operative.email} (${operative.id})`);
@@ -47,6 +69,7 @@ async function main() {
       passwordHash,
       role: UserRole.OPERATIVE,
       adminId: admin.id,
+      isApproved: true,
     },
   });
   console.log(`Operative 2: ${operative2.email} (${operative2.id})`);
@@ -154,8 +177,9 @@ async function main() {
 
   console.log('\n--- Seed complete ---');
   console.log('All accounts use password: Test1234!');
-  console.log('Admin login:     admin@infrava.co.in');
-  console.log('Operative login: operative@infrava.co.in');
+  console.log('Super Admin login: superadmin@infrava.co.in');
+  console.log('Admin login:       admin@infrava.co.in');
+  console.log('Operative login:   operative@infrava.co.in');
 }
 
 main()

@@ -5,7 +5,7 @@ import { prisma } from '../../config/prisma';
 import { env } from '../../config/env';
 import { AuthRequest } from '../../types';
 import { issueTokens, verifyRefreshToken, revokeRefreshToken, revokeAllUserTokens, signAccessToken } from '../../shared/services/token.service';
-import { sendPasswordResetEmail, sendEmailVerification } from '../../shared/services/email.service';
+import { sendPasswordResetEmail, sendEmailVerification, sendNewSignupNotification } from '../../shared/services/email.service';
 import { uploadFile, getFileUrl } from '../../shared/services/storage.service';
 import { LoginInput, ForgotPasswordInput, ResetPasswordInput, SignupInput, VerifyEmailInput } from './auth.schemas';
 import path from 'path';
@@ -18,7 +18,9 @@ export async function login(req: Request, res: Response): Promise<void> {
       where: { email: email.toLowerCase().trim() },
       select: {
         id: true, email: true, name: true, role: true, avatarUrl: true,
-        passwordHash: true, isActive: true, adminId: true, emailVerified: true,
+        passwordHash: true, isActive: true, adminId: true, emailVerified: true, isApproved: true,
+        companyName: true, companyAddress: true, companyWebsite: true,
+        companyPhone: true, companyEmail: true, companyAbn: true, logoUrl: true,
       },
     });
 
@@ -36,6 +38,12 @@ export async function login(req: Request, res: Response): Promise<void> {
     // Admins must verify email before logging in (operatives skip this)
     if (user.role === 'ADMIN' && !user.emailVerified) {
       res.status(403).json({ success: false, error: 'Please verify your email before logging in' });
+      return;
+    }
+
+    // Admins must be approved by super admin before logging in
+    if (user.role === 'ADMIN' && !user.isApproved) {
+      res.status(403).json({ success: false, error: 'Your account is pending approval. You will receive an email once approved.' });
       return;
     }
 
@@ -61,7 +69,11 @@ export async function login(req: Request, res: Response): Promise<void> {
       success: true,
       data: {
         accessToken,
-        user: { id: user.id, email: user.email, name: user.name, role: user.role, avatarUrl: user.avatarUrl },
+        user: {
+          id: user.id, email: user.email, name: user.name, role: user.role, avatarUrl: user.avatarUrl,
+          companyName: user.companyName, companyAddress: user.companyAddress, companyWebsite: user.companyWebsite,
+          companyPhone: user.companyPhone, companyEmail: user.companyEmail, companyAbn: user.companyAbn, logoUrl: user.logoUrl,
+        },
       },
     });
   } catch (err) {
@@ -82,11 +94,16 @@ export async function refresh(req: Request, res: Response): Promise<void> {
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, role: true, adminId: true, isActive: true },
+      select: { id: true, email: true, role: true, adminId: true, isActive: true, isApproved: true },
     });
 
     if (!user || !user.isActive) {
       res.status(401).json({ success: false, error: 'Account deactivated' });
+      return;
+    }
+
+    if (user.role === 'ADMIN' && !user.isApproved) {
+      res.status(401).json({ success: false, error: 'Account pending approval' });
       return;
     }
 
@@ -208,8 +225,15 @@ export async function resetPassword(req: Request, res: Response): Promise<void> 
 
 export async function signup(req: Request, res: Response): Promise<void> {
   try {
-    const { name, email, password, companyName } = req.body as SignupInput;
+    const { name, email, password, companyName, companyAddress, companyWebsite, companyPhone, companyEmail, companyAbn, logoUrl: logoUrlInput } = req.body as SignupInput;
     const normalizedEmail = email.toLowerCase().trim();
+
+    // Logo: either file upload or URL — at least one required
+    const logoFile = req.file;
+    if (!logoFile && !logoUrlInput) {
+      res.status(400).json({ success: false, error: 'Company logo is required (upload a file or provide a URL)' });
+      return;
+    }
 
     const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
     if (existing) {
@@ -219,17 +243,39 @@ export async function signup(req: Request, res: Response): Promise<void> {
 
     const passwordHash = await bcrypt.hash(password, env.BCRYPT_SALT_ROUNDS);
 
+    // Determine logo URL
+    let logoUrl: string | null = logoUrlInput || null;
+
     const user = await prisma.user.create({
       data: {
         name,
         email: normalizedEmail,
         passwordHash,
         role: 'ADMIN',
-        companyName: companyName || null,
+        companyName,
+        companyAddress,
+        companyWebsite: companyWebsite || null,
+        companyPhone,
+        companyEmail,
+        companyAbn: companyAbn || null,
+        logoUrl,
         emailVerified: false,
       },
       select: { id: true, email: true, name: true },
     });
+
+    // If file uploaded, upload to R2 and update logoUrl
+    if (logoFile) {
+      const ext = path.extname(logoFile.originalname).toLowerCase() || '.png';
+      const logoKey = `logos/${user.id}${ext}`;
+      await uploadFile(logoKey, logoFile.buffer);
+      logoUrl = getFileUrl(logoKey);
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { logoUrl },
+      });
+    }
 
     // Generate verification token
     const rawToken = crypto.randomBytes(32).toString('hex');
@@ -285,7 +331,18 @@ export async function verifyEmail(req: Request, res: Response): Promise<void> {
       }),
     ]);
 
-    res.json({ success: true, data: { message: 'Email verified. You can now log in.' } });
+    // Notify super admins about the new pending signup
+    const verifiedUser = await prisma.user.findUnique({ where: { id: record.userId }, select: { name: true, email: true, companyName: true, role: true } });
+    if (verifiedUser && verifiedUser.role === 'ADMIN' && env.SUPER_ADMIN_NOTIFICATION_EMAIL) {
+      sendNewSignupNotification({
+        to: env.SUPER_ADMIN_NOTIFICATION_EMAIL,
+        adminName: verifiedUser.name,
+        adminEmail: verifiedUser.email,
+        companyName: verifiedUser.companyName || 'Not provided',
+      }).catch(() => {}); // fire-and-forget
+    }
+
+    res.json({ success: true, data: { message: 'Email verified. Your account is pending approval by the Infrava team. You will receive an email once approved.' } });
   } catch (err) {
     console.error('Verify email error:', err);
     res.status(500).json({ success: false, error: 'Internal server error' });

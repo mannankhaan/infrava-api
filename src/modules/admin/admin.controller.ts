@@ -462,7 +462,7 @@ export async function finalSubmit(req: AuthRequest, res: Response): Promise<void
       adminId: req.user!.id,
     },
     include: {
-      admin: { select: { id: true, name: true, email: true, avatarUrl: true } },
+      admin: { select: { id: true, name: true, email: true, avatarUrl: true, companyName: true, companyAddress: true, companyWebsite: true, companyPhone: true, companyEmail: true, companyAbn: true, logoUrl: true } },
       assignedOperative: { select: { name: true } },
       photos: { where: { deletedAt: null } },
       workDays: { include: { events: true, photos: { where: { deletedAt: null } } }, orderBy: { dayNumber: 'asc' } },

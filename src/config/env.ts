@@ -26,6 +26,8 @@ export const env = {
   CRON_SECRET: process.env.CRON_SECRET!,
   INTERNAL_SECRET: process.env.INTERNAL_SECRET!,
 
+  SUPER_ADMIN_NOTIFICATION_EMAIL: process.env.SUPER_ADMIN_NOTIFICATION_EMAIL || '',
+
   APP_URL: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
   API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000',
 } as const;

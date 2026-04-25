@@ -37,10 +37,11 @@ export async function sendEmail(options: SendEmailOptions): Promise<void> {
       console.error(`[EMAIL] Failed to send to ${options.to}:`, err);
     }
   } else {
+    const urls = [...options.html.matchAll(/href="([^"]+)"/g)].map(m => m[1]);
     console.log(`\n${'='.repeat(60)}`);
     console.log(`[EMAIL STUB] To: ${options.to}`);
     console.log(`Subject: ${options.subject}`);
-    console.log(`Body: ${options.html.replace(/<[^>]+>/g, '')}`);
+    if (urls.length) console.log(`Links:\n${urls.map(u => `  → ${u}`).join('\n')}`);
     console.log(`${'='.repeat(60)}\n`);
   }
 }
@@ -271,6 +272,74 @@ export async function sendEmailVerification(params: {
       ${paragraph('Click the button below to verify your email and activate your account. This link expires in 24 hours.')}
       ${primaryButton('Verify Email', params.verifyLink)}
       ${paragraph('<span style="font-size:12px;color:#6B778C;">If you did not create an account, you can safely ignore this email.</span>')}
+    `),
+  });
+}
+
+/** Sent to admin when their account is approved by super admin */
+export async function sendAdminApprovedEmail(params: {
+  to: string;
+  name: string;
+}): Promise<void> {
+  await sendEmail({
+    to: params.to,
+    subject: 'Your Infrava account has been approved',
+    html: emailLayout(`
+      ${heading('Account Approved')}
+      ${paragraph(`Hi ${params.name},`)}
+      ${paragraph('Great news! Your Infrava account has been approved. You can now sign in and start using the platform.')}
+      ${primaryButton('Sign In', env.APP_URL)}
+      ${paragraph('If you have any questions, feel free to reach out to our support team.')}
+    `),
+  });
+}
+
+/** Sent to admin when their account is rejected by super admin */
+export async function sendAdminRejectedEmail(params: {
+  to: string;
+  name: string;
+  reason?: string;
+}): Promise<void> {
+  const reasonBlock = params.reason
+    ? `<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#FFF7F7;border:1px solid #FFBDAD;border-radius:6px;padding:16px;margin:16px 0;border-left:4px solid #DE350B;">
+        <tr><td><p style="margin:0;font-size:14px;color:#BF2600;">${params.reason}</p></td></tr>
+       </table>`
+    : '';
+
+  await sendEmail({
+    to: params.to,
+    subject: 'Infrava account update',
+    html: emailLayout(`
+      ${heading('Account Not Approved')}
+      ${paragraph(`Hi ${params.name},`)}
+      ${paragraph('Unfortunately, your Infrava account application was not approved at this time.')}
+      ${reasonBlock}
+      ${paragraph('If you believe this was a mistake or have questions, please contact us at support@infrava.co.in.')}
+    `),
+  });
+}
+
+/** Sent to super admins when a new admin verifies their email and is pending approval */
+export async function sendNewSignupNotification(params: {
+  to: string;
+  adminName: string;
+  adminEmail: string;
+  companyName: string;
+}): Promise<void> {
+  await sendEmail({
+    to: params.to,
+    subject: `New signup pending: ${params.companyName}`,
+    html: emailLayout(`
+      ${heading('New Signup Pending Approval')}
+      ${paragraph('A new admin has signed up and verified their email. Review their application:')}
+      <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#F7F8F9;border:1px solid #E4E6EA;border-radius:6px;padding:16px;margin:16px 0;">
+        <tr><td>
+          <p style="margin:0 0 6px;font-size:13px;color:#344563;"><strong>Name:</strong> ${params.adminName}</p>
+          <p style="margin:0 0 6px;font-size:13px;color:#344563;"><strong>Email:</strong> ${params.adminEmail}</p>
+          <p style="margin:0;font-size:13px;color:#344563;"><strong>Company:</strong> ${params.companyName}</p>
+        </td></tr>
+      </table>
+      ${primaryButton('Review Pending Signups', `${env.APP_URL}/superadmin/pending`)}
     `),
   });
 }

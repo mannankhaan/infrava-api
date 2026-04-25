@@ -8,7 +8,7 @@ import * as authController from './auth.controller';
 
 const router = Router();
 
-const avatarUpload = multer({
+const imageUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
   fileFilter: (_req, file, cb) => {
@@ -27,7 +27,7 @@ const authLimiter = rateLimit({
   message: { success: false, error: 'Too many attempts, try again in 15 minutes' },
 });
 
-router.post('/signup', authLimiter, validate(signupSchema), authController.signup);
+router.post('/signup', authLimiter, imageUpload.single('logo'), validate(signupSchema), authController.signup);
 router.post('/verify-email', authLimiter, validate(verifyEmailSchema), authController.verifyEmail);
 router.post('/login', authLimiter, validate(loginSchema), authController.login);
 router.post('/refresh', authController.refresh);
@@ -35,6 +35,6 @@ router.post('/logout', authController.logout);
 router.post('/logout-all', authMiddleware, authController.logoutAll);
 router.post('/forgot-password', authLimiter, validate(forgotPasswordSchema), authController.forgotPassword);
 router.post('/reset-password', authLimiter, validate(resetPasswordSchema), authController.resetPassword);
-router.post('/avatar', authMiddleware, avatarUpload.single('avatar'), authController.uploadAvatar);
+router.post('/avatar', authMiddleware, imageUpload.single('avatar'), authController.uploadAvatar);
 
 export default router;

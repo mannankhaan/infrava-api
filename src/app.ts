@@ -10,6 +10,7 @@ import adminRoutes from './modules/admin/admin.routes';
 import operativeRoutes from './modules/operative/operative.routes';
 import internalRoutes from './modules/internal/internal.routes';
 import photosRoutes from './modules/photos/photos.routes';
+import superadminRoutes from './modules/superadmin/superadmin.routes';
 
 // Middleware
 import { auditMiddleware } from './shared/middleware/audit.middleware';
@@ -53,6 +54,7 @@ app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/operative', operativeRoutes);
 app.use('/api/v1/internal', internalRoutes);
 app.use('/api/v1/photos', photosRoutes);
+app.use('/api/v1/superadmin', superadminRoutes);
 
 // 404
 app.use((_req, res) => {

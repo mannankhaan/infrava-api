@@ -10,6 +10,7 @@ datasource db {
 // ─── ENUMS ──────────────────────────────────────────────────────────
 
 enum UserRole {
+  SUPER_ADMIN
   ADMIN
   OPERATIVE
 }
@@ -45,9 +46,16 @@ model User {
   passwordHash  String    @map("password_hash")
   role          UserRole
   adminId       String?   @map("admin_id") @db.Uuid
-  companyName   String?   @map("company_name")
-  emailVerified Boolean   @default(false) @map("email_verified")
-  avatarUrl     String?   @map("avatar_url")
+  companyName    String?   @map("company_name")
+  companyAddress String?   @map("company_address")
+  companyWebsite String?   @map("company_website")
+  companyPhone   String?   @map("company_phone")
+  companyEmail   String?   @map("company_email")
+  companyAbn     String?   @map("company_abn")
+  logoUrl        String?   @map("logo_url")
+  emailVerified  Boolean   @default(false) @map("email_verified")
+  isApproved     Boolean   @default(false) @map("is_approved")
+  avatarUrl      String?   @map("avatar_url")
   isActive      Boolean   @default(true) @map("is_active")
   lastLoginAt   DateTime? @map("last_login_at") @db.Timestamptz()
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz()

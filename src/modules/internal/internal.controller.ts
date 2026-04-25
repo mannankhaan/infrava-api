@@ -18,10 +18,10 @@ export async function generateReport(req: Request, res: Response): Promise<void>
   const fault = await prisma.fault.findUnique({
     where: { id: faultId },
     include: {
-      admin: { select: { id: true, name: true, email: true } },
+      admin: { select: { id: true, name: true, email: true, avatarUrl: true, companyName: true, companyAddress: true, companyWebsite: true, companyPhone: true, companyEmail: true, companyAbn: true, logoUrl: true } },
       assignedOperative: { select: { name: true } },
       photos: { where: { deletedAt: null }, orderBy: { uploadedAt: 'asc' } },
-      workDays: { include: { events: { orderBy: { timestamp: 'asc' } } }, orderBy: { dayNumber: 'asc' } },
+      workDays: { include: { events: { orderBy: { timestamp: 'asc' } }, photos: { where: { deletedAt: null } } }, orderBy: { dayNumber: 'asc' } },
     },
   }) as any;
 

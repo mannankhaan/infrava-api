@@ -7,25 +7,28 @@ import { uploadFile, getFile } from '../shared/services/storage.service';
 type WorkDayWithRelations = WorkDay & { events: PunchEvent[]; photos: FaultPhoto[] };
 
 type FaultWithRelations = Fault & {
-  admin: Pick<User, 'id' | 'name' | 'email' | 'avatarUrl'>;
+  admin: Pick<User, 'id' | 'name' | 'email' | 'avatarUrl' | 'companyName' | 'companyAddress' | 'companyWebsite' | 'companyPhone' | 'companyEmail' | 'companyAbn' | 'logoUrl'>;
   assignedOperative: Pick<User, 'name'> | null;
   photos: FaultPhoto[];
   workDays: WorkDayWithRelations[];
 };
 
-const NAVY = '#1C2B41';
-const BLUE = '#0C66E4';
-const GRAY_DARK = '#1A1A1A';
-const GRAY_MED = '#4A4A4A';
-const GRAY_LIGHT = '#888888';
-const GRAY_RULE = '#CCCCCC';
+// ── Colours ──
+const NAVY     = '#1C2B41';
+const BLUE     = '#0C66E4';
+const DARK     = '#1A1A1A';
+const MED      = '#4A4A4A';
+const LIGHT    = '#888888';
+const RULE     = '#CCCCCC';
 const BG_LIGHT = '#F5F7FA';
-const BG_ALT = '#F0F4FF';
-const GREEN = '#16A34A';
-const RED = '#DC2626';
-const WHITE = '#FFFFFF';
+const BG_ALT   = '#F0F4FF';
+const GREEN    = '#16A34A';
+const RED      = '#DC2626';
+const WHITE    = '#FFFFFF';
 
-const LOGO_PATH = path.join(process.cwd(), 'assets', 'logo.png');
+const FALLBACK_LOGO = path.join(process.cwd(), 'assets', 'logo.png');
+
+// ── Formatting helpers ──
 
 function fmtDate(d: Date | string | null | undefined): string {
   if (!d) return '—';
@@ -57,149 +60,247 @@ function elapsed(t1: Date | string, t2: Date | string): string {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
-async function loadAvatar(url: string | null | undefined): Promise<Buffer | null> {
+async function loadImage(url: string | null | undefined): Promise<Buffer | null> {
   if (!url) return null;
   try {
-    const m = url.match(/uploads\/(.+)$/);
-    if (m) return await getFile(m[1]);
+    // Try R2 key extraction
+    const m = url.match(/(?:uploads|logos|avatars)\/(.+)$/);
+    if (m) return await getFile(m[0]);
+    // Try raw key
+    return await getFile(url);
   } catch { /* skip */ }
   return null;
 }
 
 export async function generateFaultPdf(fault: FaultWithRelations): Promise<string> {
   const LM = 50;
+  const RM = 50;
   const doc = new PDFDocument({
     size: 'A4',
-    margins: { top: 50, bottom: 60, left: LM, right: 50 },
+    margins: { top: 50, bottom: 80, left: LM, right: RM },
     bufferPages: true,
-    info: { Title: `Infrava Report — ${fault.clientRef}`, Author: 'Infrava Private Limited' },
+    info: {
+      Title: `Site Report — ${fault.clientRef}`,
+      Author: fault.admin.companyName || 'Infrava',
+    },
   });
 
   const chunks: Buffer[] = [];
   doc.on('data', (c: Buffer) => chunks.push(c));
-  const PW = doc.page.width - 100;
+  const PW = doc.page.width - LM - RM; // printable width
 
-  // ── Helpers ──
+  const company = {
+    name:    fault.admin.companyName || 'Infrava',
+    address: fault.admin.companyAddress || '',
+    website: fault.admin.companyWebsite || '',
+    phone:   fault.admin.companyPhone || '',
+    email:   fault.admin.companyEmail || fault.admin.email,
+    abn:     fault.admin.companyAbn || '',
+  };
 
-  function space(h: number) {
-    if (doc.y + h > doc.page.height - 70) { doc.addPage(); doc.y = 50; }
+  // Load Infrava logo (always fixed)
+  let infravaLogoBuf: Buffer | null = null;
+  try {
+    if (fs.existsSync(FALLBACK_LOGO)) {
+      infravaLogoBuf = fs.readFileSync(FALLBACK_LOGO);
+    }
+  } catch { /* skip */ }
+
+  // Load admin's company logo (optional)
+  let companyLogoBuf: Buffer | null = null;
+  if (fault.admin.logoUrl) {
+    companyLogoBuf = await loadImage(fault.admin.logoUrl);
+  }
+
+  // ── Layout helpers ──
+
+  function ensureSpace(h: number) {
+    if (doc.y + h > doc.page.height - 90) { doc.addPage(); doc.y = 50; }
   }
 
   function sectionBar(title: string) {
-    space(34);
-    if (doc.y > 60) doc.moveDown(0.5);
+    ensureSpace(34);
+    if (doc.y > 60) doc.moveDown(0.6);
     const y = doc.y;
-    doc.rect(LM, y, PW, 24).fill(NAVY);
-    doc.fontSize(11).font('Helvetica-Bold').fillColor(WHITE).text(title.toUpperCase(), LM + 10, y + 6, { width: PW - 20 });
-    doc.y = y + 28;
+    doc.rect(LM, y, PW, 26).fill(NAVY);
+    doc.fontSize(11).font('Helvetica-Bold').fillColor(WHITE).text(title.toUpperCase(), LM + 12, y + 7, { width: PW - 24 });
+    doc.y = y + 30;
   }
 
   function subHead(title: string) {
-    space(22);
-    doc.moveDown(0.2);
+    ensureSpace(24);
+    doc.moveDown(0.3);
     const y = doc.y;
-    doc.moveTo(LM, y).lineTo(LM + 3, y).lineTo(LM + 3, y + 16).lineTo(LM, y + 16).fill(BLUE);
-    doc.fontSize(10).font('Helvetica-Bold').fillColor(NAVY).text(title, LM + 8, y + 2);
-    doc.y = y + 20;
+    doc.rect(LM, y, 3, 16).fill(BLUE);
+    doc.fontSize(10).font('Helvetica-Bold').fillColor(NAVY).text(title, LM + 10, y + 2);
+    doc.y = y + 22;
   }
 
   function kv(label: string, value: string) {
-    space(16);
+    ensureSpace(18);
     const y = doc.y;
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(GRAY_MED).text(label, LM + 4, y, { width: 120 });
-    doc.fontSize(9).font('Helvetica').fillColor(GRAY_DARK).text(value || '—', LM + 128, y, { width: PW - 132 });
-    doc.y = Math.max(doc.y, y + 14);
+    doc.fontSize(9).font('Helvetica-Bold').fillColor(MED).text(label, LM + 6, y, { width: 130 });
+    doc.fontSize(9).font('Helvetica').fillColor(DARK).text(value || '—', LM + 140, y, { width: PW - 146 });
+    doc.y = Math.max(doc.y, y + 15);
   }
 
   function kvTwo(l1: string, v1: string, l2: string, v2: string) {
-    space(16);
+    ensureSpace(18);
     const y = doc.y;
     const half = PW / 2;
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(GRAY_MED).text(l1, LM + 4, y, { width: 90 });
-    doc.fontSize(9).font('Helvetica').fillColor(GRAY_DARK).text(v1 || '—', LM + 96, y, { width: half - 100 });
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(GRAY_MED).text(l2, LM + half + 4, y, { width: 90 });
-    doc.fontSize(9).font('Helvetica').fillColor(GRAY_DARK).text(v2 || '—', LM + half + 96, y, { width: half - 100 });
-    doc.y = y + 15;
+    doc.fontSize(9).font('Helvetica-Bold').fillColor(MED).text(l1, LM + 6, y, { width: 100 });
+    doc.fontSize(9).font('Helvetica').fillColor(DARK).text(v1 || '—', LM + 108, y, { width: half - 114 });
+    doc.fontSize(9).font('Helvetica-Bold').fillColor(MED).text(l2, LM + half + 6, y, { width: 100 });
+    doc.fontSize(9).font('Helvetica').fillColor(DARK).text(v2 || '—', LM + half + 108, y, { width: half - 114 });
+    doc.y = y + 16;
   }
 
   function para(text: string) {
-    space(16);
-    doc.fontSize(9).font('Helvetica').fillColor(GRAY_DARK).text(text, LM + 4, doc.y, { width: PW - 8, lineGap: 2 });
+    ensureSpace(18);
+    doc.fontSize(9).font('Helvetica').fillColor(DARK).text(text, LM + 6, doc.y, { width: PW - 12, lineGap: 2.5 });
   }
 
   function tHead(cols: { label: string; w: number }[]) {
-    space(20);
+    ensureSpace(22);
     const y = doc.y;
-    doc.rect(LM, y, PW, 18).fill(NAVY);
+    doc.rect(LM, y, PW, 20).fill(NAVY);
     let x = LM;
     for (const c of cols) {
-      doc.fontSize(8).font('Helvetica-Bold').fillColor(WHITE).text(c.label, x + 6, y + 4, { width: c.w - 12 });
+      doc.fontSize(8).font('Helvetica-Bold').fillColor(WHITE).text(c.label, x + 6, y + 5, { width: c.w - 12 });
+      x += c.w;
+    }
+    doc.y = y + 20;
+  }
+
+  function tRow(cols: { val: string; w: number }[], alt: boolean) {
+    ensureSpace(18);
+    const y = doc.y;
+    if (alt) doc.rect(LM, y, PW, 18).fill(BG_ALT);
+    doc.moveTo(LM, y + 18).lineTo(LM + PW, y + 18).lineWidth(0.3).strokeColor(RULE).stroke();
+    let x = LM;
+    for (const c of cols) {
+      doc.fontSize(8).font('Helvetica').fillColor(DARK).text(c.val, x + 6, y + 4, { width: c.w - 12 });
       x += c.w;
     }
     doc.y = y + 18;
   }
 
-  function tRow(cols: { val: string; w: number }[], alt: boolean) {
-    space(16);
-    const y = doc.y;
-    if (alt) doc.rect(LM, y, PW, 16).fill(BG_ALT);
-    doc.moveTo(LM, y + 16).lineTo(LM + PW, y + 16).lineWidth(0.3).strokeColor(GRAY_RULE).stroke();
-    let x = LM;
-    for (const c of cols) {
-      doc.fontSize(8).font('Helvetica').fillColor(GRAY_DARK).text(c.val, x + 6, y + 3, { width: c.w - 12 });
-      x += c.w;
+  function divider() {
+    doc.moveDown(0.3);
+    doc.moveTo(LM, doc.y).lineTo(LM + PW, doc.y).lineWidth(0.5).strokeColor(RULE).stroke();
+    doc.moveDown(0.3);
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // PAGE HEADER — Infrava logo (left) + Company branding (right)
+  // ════════════════════════════════════════════════════════════
+
+  // Top accent bar
+  doc.rect(0, 0, doc.page.width, 5).fill(NAVY);
+
+  const headerTop = 20;
+
+  // Infrava logo — always fixed, left side
+  if (infravaLogoBuf) {
+    try { doc.image(infravaLogoBuf, LM, headerTop, { height: 36 }); } catch { /* skip */ }
+  } else {
+    // Text fallback
+    doc.roundedRect(LM, headerTop, 36, 36, 4).fill(NAVY);
+    doc.fontSize(18).font('Helvetica-Bold').fillColor(WHITE).text('I', LM + 11, headerTop + 8);
+  }
+
+  // Company logo + details — right side
+  const rightW = PW * 0.55;
+  const rightX = LM + PW - rightW;
+  let rightY = headerTop;
+
+  if (companyLogoBuf) {
+    try {
+      // Place company logo right-aligned
+      doc.image(companyLogoBuf, LM + PW - 60, headerTop, { height: 36 });
+      // Company name to the left of logo
+      doc.fontSize(12).font('Helvetica-Bold').fillColor(NAVY).text(company.name, rightX, rightY, { width: rightW - 68, align: 'right' });
+      rightY += 16;
+    } catch {
+      doc.fontSize(12).font('Helvetica-Bold').fillColor(NAVY).text(company.name, rightX, rightY, { width: rightW, align: 'right' });
+      rightY += 16;
     }
-    doc.y = y + 16;
+  } else {
+    doc.fontSize(12).font('Helvetica-Bold').fillColor(NAVY).text(company.name, rightX, rightY, { width: rightW, align: 'right' });
+    rightY += 16;
   }
 
-  // ── HEADER (compact — not a full cover page) ──
-
-  doc.rect(0, 0, doc.page.width, 4).fill(NAVY);
-
-  // Logo or placeholder
-  try {
-    if (fs.existsSync(LOGO_PATH)) {
-      doc.image(LOGO_PATH, LM, 30, { height: 32 });
-    } else {
-      doc.roundedRect(LM, 30, 32, 32, 4).fill(NAVY);
-      doc.fontSize(16).font('Helvetica-Bold').fillColor(WHITE).text('I', LM + 10, 37);
-    }
-  } catch {
-    doc.roundedRect(LM, 30, 32, 32, 4).fill(NAVY);
-    doc.fontSize(16).font('Helvetica-Bold').fillColor(WHITE).text('I', LM + 10, 37);
+  // Company contact lines
+  const infoLines: string[] = [];
+  if (company.address) infoLines.push(company.address);
+  const contactBits: string[] = [];
+  if (company.phone) contactBits.push(company.phone);
+  if (company.email) contactBits.push(company.email);
+  if (contactBits.length) infoLines.push(contactBits.join('  |  '));
+  if (company.website) infoLines.push(company.website);
+  if (company.abn) infoLines.push(`ABN: ${company.abn}`);
+  for (const line of infoLines) {
+    doc.fontSize(7).font('Helvetica').fillColor(MED).text(line, rightX, rightY, { width: rightW, align: 'right' });
+    rightY += 9;
   }
 
-  // Avatar
-  const avatar = await loadAvatar(fault.admin.avatarUrl);
-  if (avatar) {
-    try { doc.image(avatar, doc.page.width - 50 - 32, 30, { height: 32, width: 32 }); } catch { /* skip */ }
-  }
-
-  // Title line
-  doc.fontSize(16).font('Helvetica-Bold').fillColor(NAVY).text('FAULT ASSIGNMENT REPORT', LM + 40, 34);
-  doc.fontSize(8).font('Helvetica').fillColor(GRAY_LIGHT).text(
-    `${fault.clientRef}  |  ${fmtDate(fault.faultDate)}  |  Prepared by ${fault.admin.name}`,
-    LM + 40, 52
+  // Title bar below header
+  const titleBarY = Math.max(headerTop + 44, rightY + 6);
+  doc.rect(LM, titleBarY, PW, 28).fill(NAVY);
+  doc.fontSize(13).font('Helvetica-Bold').fillColor(WHITE).text('SITE VISIT REPORT', LM + 14, titleBarY + 7, { width: PW * 0.6 });
+  doc.fontSize(9).font('Helvetica').fillColor('#A0B4CF').text(
+    `${fault.clientRef}  |  ${fmtDate(fault.faultDate)}`,
+    LM + 14, titleBarY + 8, { width: PW - 28, align: 'right' }
   );
 
-  doc.y = 70;
-  doc.moveTo(LM, doc.y).lineTo(LM + PW, doc.y).lineWidth(1).strokeColor(NAVY).stroke();
-  doc.y = 76;
+  doc.y = titleBarY + 36;
 
-  // ── FAULT DETAILS ──
+  // ════════════════════════════════════════════════════════════
+  // JOB / PROPERTY DETAILS
+  // ════════════════════════════════════════════════════════════
 
-  sectionBar('Fault Details');
-  kvTwo('Client Ref', fault.clientRef, 'Operative', fault.assignedOperative?.name || '—');
-  kvTwo('Company Ref', fault.companyRef || '—', 'Priority', fault.priority || '—');
-  kvTwo('Fault Date', fmtDate(fault.faultDate), 'Work Type', fault.workType || '—');
-  kvTwo('Status', fault.status.replace(/_/g, ' '), 'Location', fault.locationText || '—');
+  sectionBar('Job Details');
+  kvTwo('Client Ref', fault.clientRef, 'Company Ref', fault.companyRef || '—');
+  kvTwo('Fault Date', fmtDate(fault.faultDate), 'Priority', fault.priority || '—');
+  kvTwo('Work Type', fault.workType || '—', 'Status', fault.status.replace(/_/g, ' '));
   if (fault.title) kv('Title', fault.title);
-  if (fault.description) { kv('Description', ''); para(fault.description); }
-  if (fault.timeAllocated) kv('Time Allocated', fmtDateTime(fault.timeAllocated));
-  if (fault.plannedArrival) kv('Planned Arrival', fmtDateTime(fault.plannedArrival));
-  if (fault.plannedCompletion) kv('Planned Completion', fmtDateTime(fault.plannedCompletion));
+  if (fault.locationText) kv('Location', fault.locationText);
 
-  // ── ONSITE CONTACT ──
+  // Scheduling
+  if (fault.timeAllocated || fault.plannedArrival || fault.plannedCompletion) {
+    subHead('Scheduling');
+    if (fault.timeAllocated) kv('Time Allocated', fmtDateTime(fault.timeAllocated));
+    if (fault.plannedArrival) kv('Planned Arrival', fmtDateTime(fault.plannedArrival));
+    if (fault.plannedCompletion) kv('Planned Completion', fmtDateTime(fault.plannedCompletion));
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // SCOPE OF WORKS
+  // ════════════════════════════════════════════════════════════
+
+  if (fault.description) {
+    sectionBar('Scope of Works');
+    para(fault.description);
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // OPERATIVE / CONTRACTOR
+  // ════════════════════════════════════════════════════════════
+
+  sectionBar('Personnel');
+  kvTwo('Operative', fault.assignedOperative?.name || '—', 'Admin', fault.admin.name);
+  if (fault.contractorCompany || fault.contractorName) {
+    divider();
+    subHead('Contractor');
+    if (fault.contractorCompany) kv('Company', fault.contractorCompany);
+    if (fault.contractorName) kv('Name', fault.contractorName);
+    if (fault.contractorEmail) kv('Email', fault.contractorEmail);
+    if (fault.contractorMobile) kv('Mobile', fault.contractorMobile);
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // ONSITE CONTACT
+  // ════════════════════════════════════════════════════════════
 
   if (fault.onsiteContactName || fault.onsiteContactPhone || fault.onsiteContactEmail) {
     sectionBar('Onsite Contact');
@@ -208,7 +309,9 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
     if (fault.onsiteContactEmail) kv('Email', fault.onsiteContactEmail);
   }
 
-  // ── VISIT REQUIREMENTS (compact 2-col) ──
+  // ════════════════════════════════════════════════════════════
+  // VISIT REQUIREMENTS
+  // ════════════════════════════════════════════════════════════
 
   sectionBar('Visit Requirements');
   const reqs: [string, boolean][] = [
@@ -216,43 +319,37 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
     ['Link Block', fault.visitLinkBlock], ['Safe Work Pack', fault.visitSafeWorkPack],
     ['Possession', fault.visitPossession], ['Temp Works', fault.visitTempWorks],
     ['Isolation', fault.visitIsolation], ['Track Access', fault.visitTrackAccess],
-    ['Temp Works Req.', fault.visitTempWorksRequired], ['Working at Height', fault.visitWorkingAtHeight],
+    ['Temp Works Required', fault.visitTempWorksRequired], ['Working at Height', fault.visitWorkingAtHeight],
   ];
   const half = PW / 2;
   for (let i = 0; i < reqs.length; i += 2) {
-    space(15);
+    ensureSpace(17);
     const y = doc.y;
-    if (Math.floor(i / 2) % 2 === 0) doc.rect(LM, y, PW, 14).fill(BG_LIGHT);
+    if (Math.floor(i / 2) % 2 === 0) doc.rect(LM, y, PW, 16).fill(BG_LIGHT);
     for (let c = 0; c < 2 && i + c < reqs.length; c++) {
       const [label, on] = reqs[i + c];
-      const x = LM + c * half + 8;
-      doc.fontSize(9).font('Helvetica-Bold').fillColor(on ? GREEN : RED).text(on ? '\u2713' : '\u2717', x, y + 2, { continued: true });
-      doc.fontSize(9).font('Helvetica').fillColor(GRAY_DARK).text('  ' + label);
+      const x = LM + c * half + 10;
+      const marker = on ? '\u2713' : '\u2717';
+      doc.fontSize(9).font('Helvetica-Bold').fillColor(on ? GREEN : RED).text(marker, x, y + 3);
+      doc.fontSize(9).font('Helvetica').fillColor(DARK).text(label, x + 14, y + 3);
     }
-    doc.y = y + 14;
+    doc.y = y + 16;
   }
 
-  // ── CONTRACTOR ──
-
-  if (fault.contractorCompany || fault.contractorName) {
-    sectionBar('Contractor Details');
-    if (fault.contractorCompany) kv('Company', fault.contractorCompany);
-    if (fault.contractorName) kv('Name', fault.contractorName);
-    if (fault.contractorEmail) kv('Email', fault.contractorEmail);
-    if (fault.contractorMobile) kv('Mobile', fault.contractorMobile);
-  }
-
-  // ── DAILY REPORTS ──
+  // ════════════════════════════════════════════════════════════
+  // DAILY WORK REPORTS
+  // ════════════════════════════════════════════════════════════
 
   for (const day of fault.workDays) {
-    sectionBar(`Day ${day.dayNumber}${day.isLocked ? '  \u2014  Locked' : ''}`);
+    sectionBar(`Day ${day.dayNumber} Report${day.isLocked ? '  \u2014  Completed' : ''}`);
 
+    // Attendance / GPS Events
     if (day.events.length > 0) {
-      subHead('Attendance');
+      subHead('Attendance & GPS Tracking');
       const cols = [
-        { label: 'Event', w: PW * 0.24 }, { label: 'Time', w: PW * 0.12 },
-        { label: 'Lat', w: PW * 0.18 }, { label: 'Lng', w: PW * 0.18 },
-        { label: 'Elapsed / Dist', w: PW * 0.28 },
+        { label: 'Event', w: PW * 0.24 }, { label: 'Time', w: PW * 0.14 },
+        { label: 'Latitude', w: PW * 0.18 }, { label: 'Longitude', w: PW * 0.18 },
+        { label: 'Elapsed / Distance', w: PW * 0.26 },
       ];
       tHead(cols);
       for (let i = 0; i < day.events.length; i++) {
@@ -264,21 +361,29 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
         }
         tRow([
           { val: e.eventType.replace(/_/g, ' '), w: PW * 0.24 },
-          { val: fmtTime(e.timestamp), w: PW * 0.12 },
+          { val: fmtTime(e.timestamp), w: PW * 0.14 },
           { val: e.lat.toFixed(6), w: PW * 0.18 },
           { val: e.lng.toFixed(6), w: PW * 0.18 },
-          { val: info, w: PW * 0.28 },
+          { val: info, w: PW * 0.26 },
         ], i % 2 === 1);
       }
     }
 
+    // Personnel
     if (day.supervisorNames || day.tradespersonNames || day.operativeName) {
-      subHead('Personnel');
+      subHead('Personnel on Site');
       if (day.supervisorNames) kv('Supervisor(s)', day.supervisorNames);
       if (day.tradespersonNames) kv('Tradesperson(s)', day.tradespersonNames);
       if (day.operativeName) kv('Operative', day.operativeName);
     }
 
+    // Methodology
+    if (day.methodology) { subHead('Methodology'); para(day.methodology); }
+
+    // Works Description
+    if (day.worksDescription) { subHead('Works Description'); para(day.worksDescription); }
+
+    // Temp Works
     const tw = day.tempWorks as { item: string; qty: number; unit?: string }[] | null;
     if (tw && Array.isArray(tw) && tw.some(r => r.item)) {
       subHead('Temp Works');
@@ -287,6 +392,7 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
       tw.forEach((r, i) => { if (r.item) tRow([{ val: r.item, w: PW * 0.5 }, { val: String(r.qty), w: PW * 0.25 }, { val: r.unit || '', w: PW * 0.25 }], i % 2 === 1); });
     }
 
+    // Materials Used
     const mats = day.materialsUsed as { item: string; qty: number; unit?: string }[] | null;
     if (mats && Array.isArray(mats) && mats.some(r => r.item)) {
       subHead('Materials Used');
@@ -295,49 +401,89 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
       mats.forEach((r, i) => { if (r.item) tRow([{ val: r.item, w: PW * 0.5 }, { val: String(r.qty), w: PW * 0.25 }, { val: r.unit || '', w: PW * 0.25 }], i % 2 === 1); });
     }
 
-    if (day.methodology) { subHead('Methodology'); para(day.methodology); }
-    if (day.worksDescription) { subHead('Works Description'); para(day.worksDescription); }
-
+    // Dimensions
     const dims = day.dimensions as { activity: string; qty: number; unit?: string }[] | null;
     if (dims && Array.isArray(dims) && dims.some(r => r.activity)) {
-      subHead('Dimensions');
+      subHead('Dimensions / Quantities');
       const cols = [{ label: 'Activity', w: PW * 0.5 }, { label: 'Qty', w: PW * 0.25 }, { label: 'Unit', w: PW * 0.25 }];
       tHead(cols);
       dims.forEach((r, i) => { if (r.activity) tRow([{ val: r.activity, w: PW * 0.5 }, { val: String(r.qty), w: PW * 0.25 }, { val: r.unit || '', w: PW * 0.25 }], i % 2 === 1); });
     }
 
+    // Further Work
     if (day.furtherWork) {
       subHead('Further Work Required');
       if (day.furtherWorkNotes) para(day.furtherWorkNotes);
       else para('Yes — no additional notes provided.');
     }
 
+    // Day Photos
     if (day.photos.length > 0) {
       subHead(`Photos (${day.photos.length})`);
       for (const p of day.photos) kv(`[${p.photoStage.toUpperCase()}]`, p.fileName || p.r2Key);
     }
   }
 
-  // ── ADDITIONAL PHOTOS ──
+  // ════════════════════════════════════════════════════════════
+  // ADDITIONAL PHOTOS (not linked to a work day)
+  // ════════════════════════════════════════════════════════════
 
-  const extra = fault.photos.filter(p => !p.workDayId);
-  if (extra.length > 0) {
+  const extraPhotos = fault.photos.filter(p => !p.workDayId);
+  if (extraPhotos.length > 0) {
     sectionBar('Additional Photos');
-    for (const p of extra) kv(`[${p.photoStage.toUpperCase()}]`, p.fileName || p.r2Key);
+    for (const p of extraPhotos) kv(`[${p.photoStage.toUpperCase()}]`, p.fileName || p.r2Key);
   }
 
-  // ── FOOTERS ──
+  // ════════════════════════════════════════════════════════════
+  // PAGE FOOTERS — Company branding + page numbers
+  // ════════════════════════════════════════════════════════════
 
   const now = fmtDateTime(new Date());
   const pages = doc.bufferedPageRange().count;
+
   for (let i = 0; i < pages; i++) {
     doc.switchToPage(i);
-    if (i > 0) doc.rect(0, 0, doc.page.width, 4).fill(NAVY);
-    const fy = doc.page.height - 36;
+
+    // Top accent bar on all pages after first
+    if (i > 0) doc.rect(0, 0, doc.page.width, 5).fill(NAVY);
+
+    const fy = doc.page.height - 58;
+
+    // Separator line
     doc.moveTo(LM, fy).lineTo(LM + PW, fy).lineWidth(0.5).strokeColor(NAVY).stroke();
-    doc.fontSize(7).font('Helvetica-Bold').fillColor(NAVY).text('Infrava Private Limited', LM, fy + 6, { width: PW / 3, align: 'left' });
-    doc.fontSize(7).font('Helvetica').fillColor(GRAY_LIGHT).text(`Generated: ${now}`, LM + PW / 3, fy + 6, { width: PW / 3, align: 'center' });
-    doc.fontSize(7).font('Helvetica').fillColor(GRAY_LIGHT).text(`Page ${i + 1} of ${pages}`, LM + (PW * 2) / 3, fy + 6, { width: PW / 3, align: 'right' });
+
+    // Left column: company details
+    let footY = fy + 5;
+    doc.fontSize(7).font('Helvetica-Bold').fillColor(NAVY).text(company.name, LM, footY, { width: PW * 0.6 });
+    footY += 9;
+    const footerBits: string[] = [];
+    if (company.address) footerBits.push(company.address);
+    if (company.phone) footerBits.push(company.phone);
+    if (footerBits.length) {
+      doc.fontSize(6.5).font('Helvetica').fillColor(LIGHT).text(footerBits.join('  |  '), LM, footY, { width: PW * 0.6 });
+      footY += 8;
+    }
+    const footerBits2: string[] = [];
+    if (company.email) footerBits2.push(company.email);
+    if (company.website) footerBits2.push(company.website);
+    if (company.abn) footerBits2.push(`ABN: ${company.abn}`);
+    if (footerBits2.length) {
+      doc.fontSize(6.5).font('Helvetica').fillColor(LIGHT).text(footerBits2.join('  |  '), LM, footY, { width: PW * 0.6 });
+    }
+
+    // Right column: page number, date, Powered by Infrava
+    doc.fontSize(7).font('Helvetica').fillColor(LIGHT).text(
+      `Page ${i + 1} of ${pages}`,
+      LM, fy + 5, { width: PW, align: 'right' }
+    );
+    doc.fontSize(6.5).font('Helvetica').fillColor(LIGHT).text(
+      `Generated: ${now}`,
+      LM, fy + 14, { width: PW, align: 'right' }
+    );
+    doc.fontSize(6.5).font('Helvetica-Bold').fillColor(NAVY).text(
+      'Powered by Infrava',
+      LM, fy + 23, { width: PW, align: 'right' }
+    );
   }
 
   doc.end();
