@@ -214,7 +214,7 @@ const quotationItemSchema = z.object({
   unit: z.string().min(1, 'Unit is required'),
   rate: z.number().min(0, 'Rate must be non-negative'),
   uplift: z.number().min(0).default(0),
-  rateCardId: z.string().uuid().optional(),
+  rateCardId: z.string().uuid().nullable().optional(),
 });
 
 export const createQuotationSchema = z.object({
