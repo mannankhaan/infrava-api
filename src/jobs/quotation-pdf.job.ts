@@ -266,10 +266,7 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
   sectionBar('Quotation Details');
   kvTwo('Reference', quotation.quotationRef, 'Date', fmtDate(quotation.createdAt));
   kvTwo('Status', quotation.status, 'Revision', quotation.revisionNumber > 0 ? `Rev. ${quotation.revisionNumber}` : 'Original');
-  kv('Title', quotation.title);
-  if (quotation.parent) {
-    kv('Revision Of', `${quotation.parent.quotationRef} — ${quotation.parent.title}`);
-  }
+  kvTwo('Title', quotation.title, quotation.parent ? 'Revision Of' : '', quotation.parent ? `${quotation.parent.quotationRef} — ${quotation.parent.title}` : '');
 
   // ════════════════════════════════════════════════════════════
   // CONTACTS (Operations + Commercial)
