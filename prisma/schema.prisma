@@ -89,8 +89,10 @@ model User {
   processedDeletions DataDeletionRequest[] @relation("DeletionProcessor")
 
   quotations Quotation[] @relation("AdminQuotations")
+  rateCards  RateCard[]  @relation("AdminRateCards")
   formTemplates FormTemplate[] @relation("AdminFormTemplates")
-  projectSequences ProjectSequence[] @relation("AdminProjectSequences")
+  projectSequences   ProjectSequence[]   @relation("AdminProjectSequences")
+  quotationSequences QuotationSequence[] @relation("AdminQuotationSequences")
 
   @@map("users")
 }
@@ -123,10 +125,12 @@ model Client {
 
   formTemplateId  String?       @map("form_template_id") @db.Uuid
 
-  admin         User            @relation("AdminClients", fields: [adminId], references: [id])
-  faults        Fault[]         @relation("ClientFaults")
-  quotations    Quotation[]     @relation("ClientQuotations")
-  formTemplate  FormTemplate?   @relation("ClientFormTemplate", fields: [formTemplateId], references: [id])
+  admin              User                @relation("AdminClients", fields: [adminId], references: [id])
+  faults             Fault[]             @relation("ClientFaults")
+  quotations         Quotation[]         @relation("ClientQuotations")
+  rateCards          RateCard[]          @relation("ClientRateCards")
+  formTemplate       FormTemplate?       @relation("ClientFormTemplate", fields: [formTemplateId], references: [id])
+  quotationSequence  QuotationSequence?
 
   @@unique([adminId, name])
   @@map("clients")
@@ -146,6 +150,20 @@ model ProjectSequence {
 
   @@unique([adminId, prefix])
   @@map("project_sequences")
+}
+
+model QuotationSequence {
+  id         String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clientId   String @unique @map("client_id") @db.Uuid
+  adminId    String @map("admin_id") @db.Uuid
+  prefix     String
+  lastNumber Int    @default(0) @map("last_number")
+
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  admin  User   @relation("AdminQuotationSequences", fields: [adminId], references: [id])
+
+  @@unique([adminId, prefix])
+  @@map("quotation_sequences")
 }
 
 // ─── FORM TEMPLATES ─────────────────────────────────────────────────
@@ -440,35 +458,69 @@ model DataDeletionRequest {
   @@map("data_deletion_requests")
 }
 
-// ─── QUOTATIONS (Addons) ───────────────────────────────────────────
+// ─── RATE CARDS (per-client resource rates) ────────────────────────
+
+model RateCard {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  adminId           String   @map("admin_id") @db.Uuid
+  clientId          String   @map("client_id") @db.Uuid
+  category          String   // 'Labour' | 'Plant' | 'Material'
+  resourceName      String   @map("resource_name")
+  dayRateHourly     Float    @default(0) @map("day_rate_hourly") @db.DoublePrecision
+  nightRateHourly   Float    @default(0) @map("night_rate_hourly") @db.DoublePrecision
+  weekendRateHourly Float    @default(0) @map("weekend_rate_hourly") @db.DoublePrecision
+  dayRateShift      Float    @default(0) @map("day_rate_shift") @db.DoublePrecision
+  nightRateShift    Float    @default(0) @map("night_rate_shift") @db.DoublePrecision
+  weekendRateShift  Float    @default(0) @map("weekend_rate_shift") @db.DoublePrecision
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  admin  User   @relation("AdminRateCards", fields: [adminId], references: [id])
+  client Client @relation("ClientRateCards", fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, category, resourceName])
+  @@map("rate_cards")
+}
+
+// ─── QUOTATIONS ────────────────────────────────────────────────────
 
 model Quotation {
-  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  adminId         String          @map("admin_id") @db.Uuid
-  clientId        String?         @map("client_id") @db.Uuid
-  title           String
-  workDescription String          @map("work_description")
-  status          QuotationStatus @default(DRAFT)
-  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz()
-  updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz()
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  adminId           String          @map("admin_id") @db.Uuid
+  clientId          String?         @map("client_id") @db.Uuid
+  quotationRef      String          @unique @map("quotation_ref")
+  parentId          String?         @map("parent_id") @db.Uuid
+  revisionNumber    Int             @default(0) @map("revision_number")
+  title             String
+  workDescription   String?         @map("work_description")
+  methodology       Json?           @db.JsonB // [{ title: string, content: string, sortOrder: number }]
+  enabledCategories Json            @default("[\"Labour\",\"Plant\",\"Material\"]") @map("enabled_categories") @db.JsonB
+  vatPercent        Float?          @map("vat_percent") @db.DoublePrecision
+  status            QuotationStatus @default(DRAFT)
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz()
 
-  admin  User            @relation("AdminQuotations", fields: [adminId], references: [id])
-  client Client?         @relation("ClientQuotations", fields: [clientId], references: [id])
-  items  QuotationItem[]
+  admin     User            @relation("AdminQuotations", fields: [adminId], references: [id])
+  client    Client?         @relation("ClientQuotations", fields: [clientId], references: [id])
+  parent    Quotation?      @relation("QuotationRevisions", fields: [parentId], references: [id])
+  revisions Quotation[]     @relation("QuotationRevisions")
+  items     QuotationItem[]
 
   @@map("quotations")
 }
 
 model QuotationItem {
-  id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  quotationId String @map("quotation_id") @db.Uuid
-  itemNo      Int    @map("item_no")
-  type        String // "Labour" | "Plant" | "Material" | "Others"
+  id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  quotationId String  @map("quotation_id") @db.Uuid
+  itemNo      Int     @map("item_no")
+  category    String  // "Labour" | "Plant" | "Material"
   description String
-  quantity    Float  @db.DoublePrecision
+  quantity    Float   @db.DoublePrecision
   unit        String
-  rate        Float  @db.DoublePrecision
-  amount      Float  @db.DoublePrecision
+  rate        Float   @db.DoublePrecision
+  uplift      Float   @default(0) @db.DoublePrecision // percentage, e.g. 5 means 5%
+  amount      Float   @db.DoublePrecision // qty * rate * (1 + uplift/100)
+  rateCardId  String? @map("rate_card_id") @db.Uuid
 
   quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
 

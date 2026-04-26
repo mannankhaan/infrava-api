@@ -303,6 +303,24 @@ async function main() {
   });
   console.log('Project sequences created');
 
+  // Quotation sequences
+  await prisma.quotationSequence.upsert({
+    where: { clientId: clientNR.id },
+    update: { lastNumber: 1 },
+    create: { adminId: admin.id, clientId: clientNR.id, prefix: 'NR', lastNumber: 1 },
+  });
+  await prisma.quotationSequence.upsert({
+    where: { clientId: clientMitie.id },
+    update: { lastNumber: 0 },
+    create: { adminId: admin.id, clientId: clientMitie.id, prefix: 'MG', lastNumber: 0 },
+  });
+  await prisma.quotationSequence.upsert({
+    where: { clientId: clientCK.id },
+    update: { lastNumber: 0 },
+    create: { adminId: admin.id, clientId: clientCK.id, prefix: 'CR', lastNumber: 0 },
+  });
+  console.log('Quotation sequences created');
+
   // 6. Sample faults
   const existingFault = await prisma.fault.findUnique({ where: { projectRef: 'NR-0001' } });
   if (existingFault) {
@@ -474,7 +492,60 @@ async function main() {
   });
   console.log(`Fault 7: ${fault7.projectRef} (${fault7.id}) → ${clientCK.name}`);
 
-  // 7. Add a work day with punch events to fault1
+  // 7. Rate Cards (per client)
+  // Network Rail rate cards
+  await prisma.rateCard.createMany({
+    data: [
+      { adminId: admin.id, clientId: clientNR.id, category: 'Labour', resourceName: 'Site Manager', dayRateHourly: 30, nightRateHourly: 45, weekendRateHourly: 60, dayRateShift: 300, nightRateShift: 450, weekendRateShift: 600 },
+      { adminId: admin.id, clientId: clientNR.id, category: 'Labour', resourceName: 'Electrician', dayRateHourly: 28, nightRateHourly: 42, weekendRateHourly: 56, dayRateShift: 280, nightRateShift: 420, weekendRateShift: 560 },
+      { adminId: admin.id, clientId: clientNR.id, category: 'Labour', resourceName: 'General Operative', dayRateHourly: 18, nightRateHourly: 27, weekendRateHourly: 36, dayRateShift: 180, nightRateShift: 270, weekendRateShift: 360 },
+      { adminId: admin.id, clientId: clientNR.id, category: 'Plant', resourceName: 'MEWP', dayRateHourly: 25, nightRateHourly: 37.5, weekendRateHourly: 50, dayRateShift: 250, nightRateShift: 375, weekendRateShift: 500 },
+      { adminId: admin.id, clientId: clientNR.id, category: 'Plant', resourceName: 'Generators', dayRateHourly: 15, nightRateHourly: 22.5, weekendRateHourly: 30, dayRateShift: 150, nightRateShift: 225, weekendRateShift: 300 },
+      { adminId: admin.id, clientId: clientNR.id, category: 'Material', resourceName: 'Concrete', dayRateHourly: 95, nightRateHourly: 95, weekendRateHourly: 95, dayRateShift: 95, nightRateShift: 95, weekendRateShift: 95 },
+      { adminId: admin.id, clientId: clientNR.id, category: 'Material', resourceName: 'Steel Fixings', dayRateHourly: 45, nightRateHourly: 45, weekendRateHourly: 45, dayRateShift: 45, nightRateShift: 45, weekendRateShift: 45 },
+    ],
+  });
+  console.log('Rate cards created for Network Rail');
+
+  // Mitie rate cards
+  await prisma.rateCard.createMany({
+    data: [
+      { adminId: admin.id, clientId: clientMitie.id, category: 'Labour', resourceName: 'HVAC Technician', dayRateHourly: 32, nightRateHourly: 48, weekendRateHourly: 64, dayRateShift: 320, nightRateShift: 480, weekendRateShift: 640 },
+      { adminId: admin.id, clientId: clientMitie.id, category: 'Labour', resourceName: 'Electrician', dayRateHourly: 28, nightRateHourly: 42, weekendRateHourly: 56, dayRateShift: 280, nightRateShift: 420, weekendRateShift: 560 },
+      { adminId: admin.id, clientId: clientMitie.id, category: 'Plant', resourceName: 'Access Tower', dayRateHourly: 12, nightRateHourly: 18, weekendRateHourly: 24, dayRateShift: 120, nightRateShift: 180, weekendRateShift: 240 },
+    ],
+  });
+  console.log('Rate cards created for Mitie Group');
+
+  // 8. Sample quotation for Network Rail
+  await prisma.quotation.create({
+    data: {
+      adminId: admin.id,
+      clientId: clientNR.id,
+      quotationRef: 'NR-QT-0001',
+      title: 'Platform Door Repair — Piccadilly',
+      workDescription: 'Supply and install replacement automatic door closer mechanism at Mitie mess room in the undercroft area of Manchester Piccadilly station. Works include isolation of existing door power supply, removal of faulty unit, installation of new closer to manufacturer specification, recalibration of door speed and force parameters, and full functional testing. All works to be carried out in accordance with Network Rail standards and station operational requirements.',
+      methodology: [
+        { title: 'Methodology', content: 'Mobilise site team with appropriate PPE and tooling. Isolate power supply to automatic door system. Remove faulty closer mechanism and inspect mounting frame for damage. Install replacement closer unit and recalibrate door speed and force settings per manufacturer specifications. Test door cycle minimum 20 times and verify emergency breakout function. Clean work area and reinstate any displaced furniture or signage.' },
+        { title: 'Risk Assessment', content: 'Working in public area — establish temporary barriers and signage to divert passengers during works. Ensure COSS arrangements in place if works encroach on platform edge yellow line zone. Electrical isolation required before any work on door mechanism — lock-off and tag procedure. Manual handling assessment for door panel removal (estimated 35kg). Noise assessment not required as works are within normal station ambient levels.' },
+      ],
+      enabledCategories: ['Labour', 'Plant', 'Material'],
+      vatPercent: 20,
+      status: 'DRAFT',
+      items: {
+        create: [
+          { itemNo: 1, category: 'Labour', description: 'Site Manager', quantity: 1, unit: 'shift', rate: 300, uplift: 5, amount: 315 },
+          { itemNo: 2, category: 'Labour', description: 'Electrician', quantity: 2, unit: 'shift', rate: 280, uplift: 5, amount: 588 },
+          { itemNo: 3, category: 'Plant', description: 'MEWP', quantity: 1, unit: 'shift', rate: 250, uplift: 0, amount: 250 },
+          { itemNo: 4, category: 'Material', description: 'Door Closer Unit', quantity: 1, unit: 'nr', rate: 185, uplift: 10, amount: 203.5 },
+          { itemNo: 5, category: 'Material', description: 'Steel Fixings', quantity: 1, unit: 'lot', rate: 45, uplift: 0, amount: 45 },
+        ],
+      },
+    },
+  });
+  console.log('Sample quotation created for Network Rail');
+
+  // 9. Add a work day with punch events to fault1
   const workDay = await prisma.workDay.create({
     data: {
       faultId: fault1.id,

@@ -167,25 +167,68 @@ export type UpdateOperativeInput = z.infer<typeof updateOperativeSchema>;
 export type ProcessDeletionInput = z.infer<typeof processDeletionSchema>;
 export type AdminPresignPhotoInput = z.infer<typeof adminPresignPhotoSchema>;
 
+// ─── Rate Cards ─────────────────────────────────────────────────────
+
+const rateCardCategory = z.enum(['Labour', 'Plant', 'Material']);
+
+export const createRateCardSchema = z.object({
+  clientId: z.string().uuid(),
+  category: rateCardCategory,
+  resourceName: z.string().min(1, 'Resource name is required'),
+  dayRateHourly: z.number().min(0).default(0),
+  nightRateHourly: z.number().min(0).default(0),
+  weekendRateHourly: z.number().min(0).default(0),
+  dayRateShift: z.number().min(0).default(0),
+  nightRateShift: z.number().min(0).default(0),
+  weekendRateShift: z.number().min(0).default(0),
+});
+
+export const updateRateCardSchema = z.object({
+  resourceName: z.string().min(1).optional(),
+  dayRateHourly: z.number().min(0).optional(),
+  nightRateHourly: z.number().min(0).optional(),
+  weekendRateHourly: z.number().min(0).optional(),
+  dayRateShift: z.number().min(0).optional(),
+  nightRateShift: z.number().min(0).optional(),
+  weekendRateShift: z.number().min(0).optional(),
+});
+
+export type CreateRateCardInput = z.infer<typeof createRateCardSchema>;
+export type UpdateRateCardInput = z.infer<typeof updateRateCardSchema>;
+
 // ─── Quotations ─────────────────────────────────────────────────────
 
-const estimateItemSchema = z.object({
-  type: z.enum(['Labour', 'Plant', 'Material', 'Others']),
+const quotationSectionSchema = z.object({
+  title: z.string().min(1, 'Section title is required'),
+  content: z.string().refine(
+    (val) => val.trim().length >= 200,
+    { message: 'Section content must be at least 200 characters' }
+  ),
+  sortOrder: z.number().int().min(0).default(0),
+});
+
+const quotationItemSchema = z.object({
+  category: z.enum(['Labour', 'Plant', 'Material']),
   description: z.string().min(1, 'Description is required'),
   quantity: z.number().positive('Quantity must be positive'),
   unit: z.string().min(1, 'Unit is required'),
   rate: z.number().min(0, 'Rate must be non-negative'),
+  uplift: z.number().min(0).default(0),
+  rateCardId: z.string().uuid().optional(),
 });
 
 export const createQuotationSchema = z.object({
   clientId: z.string().uuid().optional(),
   title: z.string().min(1, 'Title is required'),
   workDescription: z.string().refine(
-    (val) => val.trim().split(/\s+/).filter(Boolean).length >= 250,
-    { message: 'Work description must be at least 250 words' }
+    (val) => val.trim().length >= 200,
+    { message: 'Work description must be at least 200 characters' }
   ),
+  enabledCategories: z.array(z.enum(['Labour', 'Plant', 'Material'])).min(1, 'Enable at least one category'),
+  vatPercent: z.number().min(0).max(100).nullable().optional(),
   status: z.enum(['DRAFT', 'FINAL']).optional().default('DRAFT'),
-  items: z.array(estimateItemSchema).min(1, 'At least one estimate item is required'),
+  sections: z.array(quotationSectionSchema).min(1, 'At least one methodology section is required'),
+  items: z.array(quotationItemSchema).min(1, 'At least one estimate item is required'),
 });
 
 export const updateQuotationSchema = createQuotationSchema.partial();

@@ -7,12 +7,14 @@ import { findOrCreateUser, ApiError } from '../../shared/services/findOrCreateUs
 import { sendWelcomeAndTaskEmail, sendTaskNotificationEmail, sendFaultRejectedEmail, sendFaultCompletedEmail } from '../../shared/services/email.service';
 import { parseFaultDocx } from '../../shared/services/docx-parser.service';
 import { generateFaultPdf } from '../../jobs/report.job';
+import { generateQuotationPdf } from '../../jobs/quotation-pdf.job';
 import { getFile } from '../../shared/services/storage.service';
 import {
   AssignOperativeInput, ReassignInput, RejectInput,
   CreateOperativeInput, UpdateOperativeInput,
   CreateFaultInput, UpdateFaultInput as AdminUpdateFaultInput,
   ProcessDeletionInput, AdminPresignPhotoInput,
+  CreateRateCardInput, UpdateRateCardInput,
   CreateQuotationInput, UpdateQuotationInput,
   CreateClientInput, UpdateClientInput,
   CreateManagerInput, UpdateManagerPermissionsInput,
@@ -21,6 +23,7 @@ import {
 import { getPresignedUploadUrl } from '../../shared/services/storage.service';
 import { validateFaultAgainstTemplate, separateFormData } from '../../shared/services/form-validator.service';
 import { resolveUniquePrefix, createProjectSequence, generateProjectRef } from '../../shared/services/project-sequence.service';
+import { createQuotationSequence, generateQuotationRef } from '../../shared/services/quotation-sequence.service';
 
 /** Resolve the effective admin ID — for managers it's their adminId, for admins it's their own id */
 function getAdminId(req: AuthRequest): string {
@@ -929,49 +932,159 @@ export async function processDeletionRequest(req: AuthRequest, res: Response): P
   res.json({ success: true, data: { message: `Deletion request ${status.toLowerCase()}` } });
 }
 
-// ─── Quotations (Addons) ───────────────────────────────────────────
+// ─── Rate Cards ────────────────────────────────────────────────────
+
+export async function createRateCard(req: AuthRequest, res: Response): Promise<void> {
+  const input = req.body as CreateRateCardInput;
+  const adminId = getAdminId(req);
+
+  const rateCard = await prisma.rateCard.create({
+    data: { adminId, ...input },
+  });
+
+  res.status(201).json({ success: true, data: rateCard });
+}
+
+export async function listRateCards(req: AuthRequest, res: Response): Promise<void> {
+  const clientId = req.query.clientId as string | undefined;
+  const category = req.query.category as string | undefined;
+
+  const rateCards = await prisma.rateCard.findMany({
+    where: {
+      adminId: getAdminId(req),
+      ...(clientId && { clientId }),
+      ...(category && { category }),
+    },
+    orderBy: [{ category: 'asc' }, { resourceName: 'asc' }],
+  });
+
+  res.json({ success: true, data: rateCards });
+}
+
+export async function getRateCard(req: AuthRequest, res: Response): Promise<void> {
+  const rateCard = await prisma.rateCard.findFirst({
+    where: { id: req.params.id as string, adminId: getAdminId(req) },
+  });
+
+  if (!rateCard) {
+    res.status(404).json({ success: false, error: 'Rate card not found' });
+    return;
+  }
+
+  res.json({ success: true, data: rateCard });
+}
+
+export async function updateRateCard(req: AuthRequest, res: Response): Promise<void> {
+  const rateCard = await prisma.rateCard.findFirst({
+    where: { id: req.params.id as string, adminId: getAdminId(req) },
+  });
+
+  if (!rateCard) {
+    res.status(404).json({ success: false, error: 'Rate card not found' });
+    return;
+  }
+
+  const input = req.body as UpdateRateCardInput;
+  const updated = await prisma.rateCard.update({
+    where: { id: rateCard.id },
+    data: input,
+  });
+
+  res.json({ success: true, data: updated });
+}
+
+export async function deleteRateCard(req: AuthRequest, res: Response): Promise<void> {
+  const rateCard = await prisma.rateCard.findFirst({
+    where: { id: req.params.id as string, adminId: getAdminId(req) },
+  });
+
+  if (!rateCard) {
+    res.status(404).json({ success: false, error: 'Rate card not found' });
+    return;
+  }
+
+  await prisma.rateCard.delete({ where: { id: rateCard.id } });
+  res.json({ success: true, data: { message: 'Rate card deleted' } });
+}
+
+// ─── Quotations ────────────────────────────────────────────────────
+
+function computeAmount(quantity: number, rate: number, uplift: number): number {
+  return Math.round(quantity * rate * (1 + (uplift || 0) / 100) * 100) / 100;
+}
+
+function computeQuotationTotals(items: { category: string; amount: number }[], vatPercent?: number | null) {
+  const categorySubtotals: Record<string, number> = {};
+  for (const item of items) {
+    categorySubtotals[item.category] = (categorySubtotals[item.category] || 0) + item.amount;
+  }
+  const totalExclVat = items.reduce((sum, item) => sum + item.amount, 0);
+  const vat = vatPercent ? Math.round(totalExclVat * vatPercent / 100 * 100) / 100 : 0;
+  return {
+    categorySubtotals,
+    totalExclVat: Math.round(totalExclVat * 100) / 100,
+    vatAmount: vat,
+    totalInclVat: Math.round((totalExclVat + vat) * 100) / 100,
+  };
+}
 
 export async function createQuotation(req: AuthRequest, res: Response): Promise<void> {
-  const { clientId, title, workDescription, status, items } = req.body as CreateQuotationInput;
+  const { clientId, title, workDescription, enabledCategories, vatPercent, status, sections, items } = req.body as CreateQuotationInput;
+
+  if (!clientId) {
+    res.status(400).json({ success: false, error: 'Client is required' });
+    return;
+  }
+
+  const quotationRef = await generateQuotationRef(clientId);
 
   const quotation = await prisma.quotation.create({
     data: {
       adminId: getAdminId(req),
       clientId,
+      quotationRef,
       title,
       workDescription,
+      methodology: sections,
+      enabledCategories,
+      vatPercent: vatPercent ?? null,
       status: status || 'DRAFT',
       items: {
         create: items.map((item, i) => ({
           itemNo: i + 1,
-          type: item.type,
+          category: item.category,
           description: item.description,
           quantity: item.quantity,
           unit: item.unit,
           rate: item.rate,
-          amount: Math.round(item.quantity * item.rate * 100) / 100,
+          uplift: item.uplift || 0,
+          amount: computeAmount(item.quantity, item.rate, item.uplift || 0),
+          rateCardId: item.rateCardId || null,
         })),
       },
     },
     include: { items: { orderBy: { itemNo: 'asc' } } },
   });
 
-  res.status(201).json({ success: true, data: quotation });
+  const totals = computeQuotationTotals(quotation.items, quotation.vatPercent);
+  res.status(201).json({ success: true, data: { ...quotation, ...totals } });
 }
 
 export async function listQuotations(req: AuthRequest, res: Response): Promise<void> {
   const clientId = req.query.clientId as string | undefined;
   const quotations = await prisma.quotation.findMany({
     where: { adminId: getAdminId(req), ...(clientId ? { clientId: clientId === 'none' ? null : clientId } : getClientScopeFilter(req)) } as any,
-    include: { items: true },
+    include: {
+      items: true,
+      parent: { select: { id: true, quotationRef: true, revisionNumber: true } },
+    },
     orderBy: { createdAt: 'desc' },
   });
 
-  const data = quotations.map((q) => ({
-    ...q,
-    grandTotal: q.items.reduce((sum, item) => sum + item.amount, 0),
-    itemCount: q.items.length,
-  }));
+  const data = quotations.map((q) => {
+    const totals = computeQuotationTotals(q.items, q.vatPercent);
+    return { ...q, ...totals, grandTotal: totals.totalInclVat, itemCount: q.items.length };
+  });
 
   res.json({ success: true, data });
 }
@@ -979,7 +1092,11 @@ export async function listQuotations(req: AuthRequest, res: Response): Promise<v
 export async function getQuotation(req: AuthRequest, res: Response): Promise<void> {
   const quotation = await prisma.quotation.findFirst({
     where: { id: req.params.id as string, adminId: getAdminId(req) },
-    include: { items: { orderBy: { itemNo: 'asc' } } },
+    include: {
+      items: { orderBy: { itemNo: 'asc' } },
+      parent: { select: { id: true, quotationRef: true, revisionNumber: true, title: true } },
+      revisions: { select: { id: true, quotationRef: true, revisionNumber: true, status: true, createdAt: true }, orderBy: { revisionNumber: 'asc' } },
+    },
   });
 
   if (!quotation) {
@@ -987,8 +1104,8 @@ export async function getQuotation(req: AuthRequest, res: Response): Promise<voi
     return;
   }
 
-  const grandTotal = quotation.items.reduce((sum, item) => sum + item.amount, 0);
-  res.json({ success: true, data: { ...quotation, grandTotal } });
+  const totals = computeQuotationTotals(quotation.items, quotation.vatPercent);
+  res.json({ success: true, data: { ...quotation, ...totals, grandTotal: totals.totalInclVat } });
 }
 
 export async function updateQuotation(req: AuthRequest, res: Response): Promise<void> {
@@ -1006,7 +1123,7 @@ export async function updateQuotation(req: AuthRequest, res: Response): Promise<
     return;
   }
 
-  const { title, workDescription, status, items } = req.body as UpdateQuotationInput;
+  const { title, workDescription, enabledCategories, vatPercent, status, sections, items } = req.body as UpdateQuotationInput;
 
   await prisma.$transaction(async (tx) => {
     await tx.quotation.update({
@@ -1014,6 +1131,9 @@ export async function updateQuotation(req: AuthRequest, res: Response): Promise<
       data: {
         ...(title !== undefined && { title }),
         ...(workDescription !== undefined && { workDescription }),
+        ...(sections !== undefined && { methodology: sections }),
+        ...(enabledCategories !== undefined && { enabledCategories }),
+        ...(vatPercent !== undefined && { vatPercent: vatPercent ?? null }),
         ...(status !== undefined && { status }),
       },
     });
@@ -1024,12 +1144,14 @@ export async function updateQuotation(req: AuthRequest, res: Response): Promise<
         data: items.map((item, i) => ({
           quotationId: quotation.id,
           itemNo: i + 1,
-          type: item.type,
+          category: item.category,
           description: item.description,
           quantity: item.quantity,
           unit: item.unit,
           rate: item.rate,
-          amount: Math.round(item.quantity * item.rate * 100) / 100,
+          uplift: item.uplift || 0,
+          amount: computeAmount(item.quantity, item.rate, item.uplift || 0),
+          rateCardId: item.rateCardId || null,
         })),
       });
     }
@@ -1040,7 +1162,12 @@ export async function updateQuotation(req: AuthRequest, res: Response): Promise<
     include: { items: { orderBy: { itemNo: 'asc' } } },
   });
 
-  res.json({ success: true, data: updated });
+  if (updated) {
+    const totals = computeQuotationTotals(updated.items, updated.vatPercent);
+    res.json({ success: true, data: { ...updated, ...totals } });
+  } else {
+    res.json({ success: true, data: updated });
+  }
 }
 
 export async function deleteQuotation(req: AuthRequest, res: Response): Promise<void> {
@@ -1060,6 +1187,114 @@ export async function deleteQuotation(req: AuthRequest, res: Response): Promise<
 
   await prisma.quotation.delete({ where: { id: quotation.id } });
   res.json({ success: true, data: { message: 'Quotation deleted' } });
+}
+
+export async function reviseQuotation(req: AuthRequest, res: Response): Promise<void> {
+  const adminId = getAdminId(req);
+  const quotation = await prisma.quotation.findFirst({
+    where: { id: req.params.id as string, adminId },
+    include: { items: { orderBy: { itemNo: 'asc' } } },
+  });
+
+  if (!quotation) {
+    res.status(404).json({ success: false, error: 'Quotation not found' });
+    return;
+  }
+
+  if (quotation.status !== 'FINAL') {
+    res.status(400).json({ success: false, error: 'Only finalized quotations can be revised' });
+    return;
+  }
+
+  // Always derive from the root parent
+  const rootId = quotation.parentId || quotation.id;
+
+  // Find the highest revision number among all revisions of this root
+  const maxRevision = await prisma.quotation.aggregate({
+    where: { OR: [{ id: rootId }, { parentId: rootId }] },
+    _max: { revisionNumber: true },
+  });
+
+  const newRevisionNumber = (maxRevision._max.revisionNumber ?? 0) + 1;
+
+  // Build revision ref: strip any existing R suffix, then append R{n}
+  const rootQuotation = quotation.parentId
+    ? await prisma.quotation.findUnique({ where: { id: rootId }, select: { quotationRef: true } })
+    : quotation;
+  const cleanBaseRef = rootQuotation!.quotationRef.replace(/R\d+$/, '');
+  const newRef = `${cleanBaseRef}R${newRevisionNumber}`;
+
+  const created = await prisma.quotation.create({
+    data: {
+      adminId,
+      clientId: quotation.clientId,
+      quotationRef: newRef,
+      parentId: rootId,
+      revisionNumber: newRevisionNumber,
+      title: quotation.title,
+      workDescription: quotation.workDescription,
+      methodology: quotation.methodology ?? undefined,
+      enabledCategories: quotation.enabledCategories as any,
+      vatPercent: quotation.vatPercent,
+      status: 'DRAFT',
+      items: {
+        create: quotation.items.map((item, i) => ({
+          itemNo: i + 1,
+          category: item.category,
+          description: item.description,
+          quantity: item.quantity,
+          unit: item.unit,
+          rate: item.rate,
+          uplift: item.uplift,
+          amount: item.amount,
+          rateCardId: item.rateCardId,
+        })),
+      },
+    },
+  });
+
+  const revision = await prisma.quotation.findUnique({
+    where: { id: created.id },
+    include: { items: { orderBy: { itemNo: 'asc' } } },
+  });
+
+  const totals = computeQuotationTotals(revision!.items, revision!.vatPercent);
+  res.status(201).json({ success: true, data: { ...revision, ...totals } });
+}
+
+export async function downloadQuotationPdf(req: AuthRequest, res: Response): Promise<void> {
+  const quotation = await prisma.quotation.findFirst({
+    where: { id: req.params.id as string, adminId: getAdminId(req) },
+    include: {
+      admin: {
+        select: {
+          id: true, name: true, email: true,
+          companyName: true, companyAddress: true, companyWebsite: true,
+          companyPhone: true, companyEmail: true, companyAbn: true, logoUrl: true,
+        },
+      },
+      client: {
+        select: {
+          name: true, address: true,
+          opsContactName: true, opsContactEmail: true, opsContactPhone: true,
+          comContactName: true, comContactEmail: true, comContactPhone: true,
+        },
+      },
+      items: { orderBy: { itemNo: 'asc' } },
+      parent: { select: { id: true, quotationRef: true, revisionNumber: true, title: true } },
+    },
+  });
+
+  if (!quotation) {
+    res.status(404).json({ success: false, error: 'Quotation not found' });
+    return;
+  }
+
+  const buffer = await generateQuotationPdf(quotation);
+  const filename = `Quotation-${quotation.quotationRef}.pdf`;
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buffer);
 }
 
 // ─── Client CRUD ───────────────────────────────────────────────────
@@ -1104,8 +1339,9 @@ export async function createClient(req: AuthRequest, res: Response): Promise<voi
     },
   });
 
-  // Create the project sequence row for this client
+  // Create sequence rows for this client
   await createProjectSequence(adminId, client.id, prefix);
+  await createQuotationSequence(adminId, client.id, prefix);
 
   res.status(201).json({ success: true, data: client });
 }

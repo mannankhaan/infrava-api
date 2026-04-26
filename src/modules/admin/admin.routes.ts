@@ -21,6 +21,7 @@ import {
   assignOperativeSchema, reassignSchema, rejectSchema,
   createOperativeSchema, updateOperativeSchema,
   processDeletionSchema, adminPresignPhotoSchema,
+  createRateCardSchema, updateRateCardSchema,
   createQuotationSchema, updateQuotationSchema,
   createClientSchema, updateClientSchema,
   createManagerSchema, updateManagerPermissionsSchema,
@@ -84,12 +85,21 @@ router.get('/audit-logs', requirePermission('auditLogs', 'view'), ctrl.listAudit
 router.get('/deletion-requests', requirePermission('gdpr', 'view'), ctrl.listDeletionRequests);
 router.patch('/deletion-requests/:id', requirePermission('gdpr', 'process'), validate(processDeletionSchema), ctrl.processDeletionRequest);
 
-// Quotations (Addons)
+// Rate Cards
+router.post('/rate-cards', requirePermission('quotations', 'create'), validate(createRateCardSchema), ctrl.createRateCard);
+router.get('/rate-cards', requirePermission('quotations', 'view'), ctrl.listRateCards);
+router.get('/rate-cards/:id', requirePermission('quotations', 'view'), ctrl.getRateCard);
+router.patch('/rate-cards/:id', requirePermission('quotations', 'edit'), validate(updateRateCardSchema), ctrl.updateRateCard);
+router.delete('/rate-cards/:id', requirePermission('quotations', 'delete'), ctrl.deleteRateCard);
+
+// Quotations
 router.post('/quotations', requirePermission('quotations', 'create'), validate(createQuotationSchema), ctrl.createQuotation);
 router.get('/quotations', requirePermission('quotations', 'view'), ctrl.listQuotations);
 router.get('/quotations/:id', requirePermission('quotations', 'view'), ctrl.getQuotation);
 router.patch('/quotations/:id', requirePermission('quotations', 'edit'), validate(updateQuotationSchema), ctrl.updateQuotation);
 router.delete('/quotations/:id', requirePermission('quotations', 'delete'), ctrl.deleteQuotation);
+router.post('/quotations/:id/revise', requirePermission('quotations', 'create'), ctrl.reviseQuotation);
+router.get('/quotations/:id/pdf', requirePermission('quotations', 'view'), ctrl.downloadQuotationPdf);
 
 // ─── Manager CRUD (Admin only) ──────────────────────────────────
 router.post('/managers', ctrl.createManager);
