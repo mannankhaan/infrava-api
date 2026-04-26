@@ -170,6 +170,7 @@ export type AdminPresignPhotoInput = z.infer<typeof adminPresignPhotoSchema>;
 // ─── Rate Cards ─────────────────────────────────────────────────────
 
 const rateCardCategory = z.enum(['Labour', 'Plant', 'Material']);
+const quotationCategory = z.enum(['Labour', 'Plant', 'Material', 'Other']);
 
 export const createRateCardSchema = z.object({
   clientId: z.string().uuid(),
@@ -208,7 +209,7 @@ const quotationSectionSchema = z.object({
 });
 
 const quotationItemSchema = z.object({
-  category: z.enum(['Labour', 'Plant', 'Material']),
+  category: quotationCategory,
   description: z.string().min(1, 'Description is required'),
   quantity: z.number().positive('Quantity must be positive'),
   unit: z.string().min(1, 'Unit is required'),
@@ -224,8 +225,9 @@ export const createQuotationSchema = z.object({
     (val) => val.trim().length >= 200,
     { message: 'Work description must be at least 200 characters' }
   ),
-  enabledCategories: z.array(z.enum(['Labour', 'Plant', 'Material'])).min(1, 'Enable at least one category'),
+  enabledCategories: z.array(quotationCategory).min(1, 'Enable at least one category'),
   vatPercent: z.number().min(0).max(100).nullable().optional(),
+  note: z.string().optional(),
   status: z.enum(['DRAFT', 'FINAL']).optional().default('DRAFT'),
   sections: z.array(quotationSectionSchema).min(1, 'At least one methodology section is required'),
   items: z.array(quotationItemSchema).min(1, 'At least one estimate item is required'),

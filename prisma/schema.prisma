@@ -496,6 +496,7 @@ model Quotation {
   methodology       Json?           @db.JsonB // [{ title: string, content: string, sortOrder: number }]
   enabledCategories Json            @default("[\"Labour\",\"Plant\",\"Material\"]") @map("enabled_categories") @db.JsonB
   vatPercent        Float?          @map("vat_percent") @db.DoublePrecision
+  note              String?
   status            QuotationStatus @default(DRAFT)
   createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz()

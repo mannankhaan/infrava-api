@@ -1029,7 +1029,7 @@ function computeQuotationTotals(items: { category: string; amount: number }[], v
 }
 
 export async function createQuotation(req: AuthRequest, res: Response): Promise<void> {
-  const { clientId, title, workDescription, enabledCategories, vatPercent, status, sections, items } = req.body as CreateQuotationInput;
+  const { clientId, title, workDescription, enabledCategories, vatPercent, note, status, sections, items } = req.body as CreateQuotationInput;
 
   if (!clientId) {
     res.status(400).json({ success: false, error: 'Client is required' });
@@ -1048,6 +1048,7 @@ export async function createQuotation(req: AuthRequest, res: Response): Promise<
       methodology: sections,
       enabledCategories,
       vatPercent: vatPercent ?? null,
+      note: note || null,
       status: status || 'DRAFT',
       items: {
         create: items.map((item, i) => ({
@@ -1123,7 +1124,7 @@ export async function updateQuotation(req: AuthRequest, res: Response): Promise<
     return;
   }
 
-  const { title, workDescription, enabledCategories, vatPercent, status, sections, items } = req.body as UpdateQuotationInput;
+  const { title, workDescription, enabledCategories, vatPercent, note, status, sections, items } = req.body as UpdateQuotationInput;
 
   await prisma.$transaction(async (tx) => {
     await tx.quotation.update({
@@ -1134,6 +1135,7 @@ export async function updateQuotation(req: AuthRequest, res: Response): Promise<
         ...(sections !== undefined && { methodology: sections }),
         ...(enabledCategories !== undefined && { enabledCategories }),
         ...(vatPercent !== undefined && { vatPercent: vatPercent ?? null }),
+        ...(note !== undefined && { note: note || null }),
         ...(status !== undefined && { status }),
       },
     });
@@ -1206,22 +1208,16 @@ export async function reviseQuotation(req: AuthRequest, res: Response): Promise<
     return;
   }
 
-  // Always derive from the root parent
-  const rootId = quotation.parentId || quotation.id;
+  // Derive the clean base ref (strip R suffix) for numbering
+  const cleanBaseRef = quotation.quotationRef.replace(/R\d+$/, '');
 
-  // Find the highest revision number among all revisions of this root
-  const maxRevision = await prisma.quotation.aggregate({
-    where: { OR: [{ id: rootId }, { parentId: rootId }] },
-    _max: { revisionNumber: true },
+  // Find the highest revision number among all quotations with the same base ref
+  const allRevisions = await prisma.quotation.findMany({
+    where: { adminId, quotationRef: { startsWith: cleanBaseRef } },
+    select: { revisionNumber: true },
   });
-
-  const newRevisionNumber = (maxRevision._max.revisionNumber ?? 0) + 1;
-
-  // Build revision ref: strip any existing R suffix, then append R{n}
-  const rootQuotation = quotation.parentId
-    ? await prisma.quotation.findUnique({ where: { id: rootId }, select: { quotationRef: true } })
-    : quotation;
-  const cleanBaseRef = rootQuotation!.quotationRef.replace(/R\d+$/, '');
+  const maxRevNum = allRevisions.reduce((max, r) => Math.max(max, r.revisionNumber), 0);
+  const newRevisionNumber = maxRevNum + 1;
   const newRef = `${cleanBaseRef}R${newRevisionNumber}`;
 
   const created = await prisma.quotation.create({
@@ -1229,13 +1225,14 @@ export async function reviseQuotation(req: AuthRequest, res: Response): Promise<
       adminId,
       clientId: quotation.clientId,
       quotationRef: newRef,
-      parentId: rootId,
+      parentId: quotation.id,
       revisionNumber: newRevisionNumber,
       title: quotation.title,
       workDescription: quotation.workDescription,
       methodology: quotation.methodology ?? undefined,
       enabledCategories: quotation.enabledCategories as any,
       vatPercent: quotation.vatPercent,
+      note: quotation.note,
       status: 'DRAFT',
       items: {
         create: quotation.items.map((item, i) => ({
