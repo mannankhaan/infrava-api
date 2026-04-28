@@ -181,6 +181,10 @@ CREATED → ASSIGNED_TO_OPERATIVE → OPERATIVE_SUBMITTED → ADMIN_SUBMITTED �
                                 ↘ REASSIGNED
 ```
 
+## TODO
+
+- [ ] **Set up same-domain architecture for cookies** — Currently using `sameSite: 'none'` for refresh token cookie (commit `5760390`) as a temporary fix because frontend and API are on different domains. Proper fix: put both behind a shared domain (e.g. `app.infrava.co.in` + `api.infrava.co.in`), switch to `sameSite: 'lax'` with `domain: '.infrava.co.in'`, then revert commit `5760390`.
+
 ## Scripts
 
 ```bash
