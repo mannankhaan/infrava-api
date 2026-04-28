@@ -1029,7 +1029,7 @@ function computeQuotationTotals(items: { category: string; amount: number }[], v
 }
 
 export async function createQuotation(req: AuthRequest, res: Response): Promise<void> {
-  const { clientId, title, workDescription, enabledCategories, vatPercent, note, status, sections, items } = req.body as CreateQuotationInput;
+  const { clientId, title, clientReference, workDescription, enabledCategories, vatPercent, note, status, sections, items } = req.body as CreateQuotationInput;
 
   if (!clientId) {
     res.status(400).json({ success: false, error: 'Client is required' });
@@ -1044,6 +1044,7 @@ export async function createQuotation(req: AuthRequest, res: Response): Promise<
       clientId,
       quotationRef,
       title,
+      clientReference: clientReference || null,
       workDescription,
       methodology: sections,
       enabledCategories,
@@ -1124,13 +1125,14 @@ export async function updateQuotation(req: AuthRequest, res: Response): Promise<
     return;
   }
 
-  const { title, workDescription, enabledCategories, vatPercent, note, status, sections, items } = req.body as UpdateQuotationInput;
+  const { title, clientReference, workDescription, enabledCategories, vatPercent, note, status, sections, items } = req.body as UpdateQuotationInput;
 
   await prisma.$transaction(async (tx) => {
     await tx.quotation.update({
       where: { id: quotation.id },
       data: {
         ...(title !== undefined && { title }),
+        ...(clientReference !== undefined && { clientReference: clientReference || null }),
         ...(workDescription !== undefined && { workDescription }),
         ...(sections !== undefined && { methodology: sections }),
         ...(enabledCategories !== undefined && { enabledCategories }),
@@ -1228,6 +1230,7 @@ export async function reviseQuotation(req: AuthRequest, res: Response): Promise<
       parentId: quotation.id,
       revisionNumber: newRevisionNumber,
       title: quotation.title,
+      clientReference: quotation.clientReference,
       workDescription: quotation.workDescription,
       methodology: quotation.methodology ?? undefined,
       enabledCategories: quotation.enabledCategories as any,

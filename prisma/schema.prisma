@@ -466,6 +466,8 @@ model RateCard {
   clientId          String   @map("client_id") @db.Uuid
   category          String   // 'Labour' | 'Plant' | 'Material'
   resourceName      String   @map("resource_name")
+  description       String?
+  unit              String?
   dayRateHourly     Float    @default(0) @map("day_rate_hourly") @db.DoublePrecision
   nightRateHourly   Float    @default(0) @map("night_rate_hourly") @db.DoublePrecision
   weekendRateHourly Float    @default(0) @map("weekend_rate_hourly") @db.DoublePrecision
@@ -492,6 +494,7 @@ model Quotation {
   parentId          String?         @map("parent_id") @db.Uuid
   revisionNumber    Int             @default(0) @map("revision_number")
   title             String
+  clientReference   String?         @map("client_reference")
   workDescription   String?         @map("work_description")
   methodology       Json?           @db.JsonB // [{ title: string, content: string, sortOrder: number }]
   enabledCategories Json            @default("[\"Labour\",\"Plant\",\"Material\"]") @map("enabled_categories") @db.JsonB

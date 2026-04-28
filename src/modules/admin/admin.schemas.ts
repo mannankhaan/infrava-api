@@ -176,6 +176,8 @@ export const createRateCardSchema = z.object({
   clientId: z.string().uuid(),
   category: rateCardCategory,
   resourceName: z.string().min(1, 'Resource name is required'),
+  description: z.string().optional(),
+  unit: z.string().optional(),
   dayRateHourly: z.number().min(0).default(0),
   nightRateHourly: z.number().min(0).default(0),
   weekendRateHourly: z.number().min(0).default(0),
@@ -186,6 +188,8 @@ export const createRateCardSchema = z.object({
 
 export const updateRateCardSchema = z.object({
   resourceName: z.string().min(1).optional(),
+  description: z.string().optional(),
+  unit: z.string().optional(),
   dayRateHourly: z.number().min(0).optional(),
   nightRateHourly: z.number().min(0).optional(),
   weekendRateHourly: z.number().min(0).optional(),
@@ -221,6 +225,7 @@ const quotationItemSchema = z.object({
 export const createQuotationSchema = z.object({
   clientId: z.string().uuid().optional(),
   title: z.string().min(1, 'Title is required'),
+  clientReference: z.string().optional(),
   workDescription: z.string().refine(
     (val) => val.trim().length >= 200,
     { message: 'Work description must be at least 200 characters' }
