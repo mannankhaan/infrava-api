@@ -118,6 +118,7 @@ model Client {
   projectDescription String?  @map("project_description")
   contractPdfR2Key   String?  @map("contract_pdf_r2_key")
   clientRefPrefix    String?  @map("client_ref_prefix")
+  defaultTerms       String?  @map("default_terms") @db.Text
   isActive           Boolean  @default(true) @map("is_active")
   projectSequence    ProjectSequence?
   createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz()
@@ -465,6 +466,7 @@ model RateCard {
   adminId           String   @map("admin_id") @db.Uuid
   clientId          String   @map("client_id") @db.Uuid
   category          String   // 'Labour' | 'Plant' | 'Material'
+  subCategory       String?  @map("sub_category")
   resourceName      String   @map("resource_name")
   description       String?
   unit              String?
@@ -480,7 +482,7 @@ model RateCard {
   admin  User   @relation("AdminRateCards", fields: [adminId], references: [id])
   client Client @relation("ClientRateCards", fields: [clientId], references: [id], onDelete: Cascade)
 
-  @@unique([clientId, category, resourceName])
+  @@unique([clientId, category, subCategory, resourceName])
   @@map("rate_cards")
 }
 
@@ -500,6 +502,7 @@ model Quotation {
   enabledCategories Json            @default("[\"Labour\",\"Plant\",\"Material\"]") @map("enabled_categories") @db.JsonB
   vatPercent        Float?          @map("vat_percent") @db.DoublePrecision
   note              String?
+  termsAndConditions String?  @map("terms_and_conditions") @db.Text
   status            QuotationStatus @default(DRAFT)
   createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz()
@@ -518,6 +521,7 @@ model QuotationItem {
   quotationId String  @map("quotation_id") @db.Uuid
   itemNo      Int     @map("item_no")
   category    String  // "Labour" | "Plant" | "Material"
+  subCategory String?  @map("sub_category")
   description String
   quantity    Float   @db.DoublePrecision
   unit        String

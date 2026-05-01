@@ -146,16 +146,23 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
   }
 
   function tRow(cols: { val: string; w: number; align?: string; bold?: boolean }[], alt: boolean) {
-    ensureSpace(20);
+    // Calculate dynamic row height based on text wrapping
+    let maxTextH = 0;
+    for (const c of cols) {
+      const h = doc.fontSize(8).font(c.bold ? 'Helvetica-Bold' : 'Helvetica').heightOfString(c.val, { width: c.w - 12 });
+      if (h > maxTextH) maxTextH = h;
+    }
+    const rowH = Math.max(20, maxTextH + 10); // 5px padding top + 5px bottom
+    ensureSpace(rowH);
     const y = doc.y;
-    if (alt) doc.rect(LM, y, PW, 20).fill(BG_ALT);
-    doc.moveTo(LM, y + 20).lineTo(LM + PW, y + 20).lineWidth(0.3).strokeColor(RULE).stroke();
+    if (alt) doc.rect(LM, y, PW, rowH).fill(BG_ALT);
+    doc.moveTo(LM, y + rowH).lineTo(LM + PW, y + rowH).lineWidth(0.3).strokeColor(RULE).stroke();
     let x = LM;
     for (const c of cols) {
       doc.fontSize(8).font(c.bold ? 'Helvetica-Bold' : 'Helvetica').fillColor(DARK).text(c.val, x + 6, y + 5, { width: c.w - 12, align: (c.align as any) || 'left' });
       x += c.w;
     }
-    doc.y = y + 20;
+    doc.y = y + rowH;
   }
 
   function divider() {
@@ -339,13 +346,14 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
 
   const enabledCategories = quotation.enabledCategories as string[];
   const colDefs = [
-    { label: '#',           w: PW * 0.06, align: 'left' },
-    { label: 'Description', w: PW * 0.30, align: 'left' },
-    { label: 'Qty',         w: PW * 0.10, align: 'right' },
-    { label: 'Unit',        w: PW * 0.10, align: 'left' },
-    { label: 'Rate',        w: PW * 0.14, align: 'right' },
+    { label: '#',           w: PW * 0.05, align: 'left' },
+    { label: 'Description', w: PW * 0.22, align: 'left' },
+    { label: 'Category',    w: PW * 0.16, align: 'left' },
+    { label: 'Qty',         w: PW * 0.08, align: 'right' },
+    { label: 'Unit',        w: PW * 0.09, align: 'left' },
+    { label: 'Rate',        w: PW * 0.12, align: 'right' },
     { label: 'Uplift',      w: PW * 0.12, align: 'right' },
-    { label: 'Amount',      w: PW * 0.18, align: 'right' },
+    { label: 'Amount',      w: PW * 0.16, align: 'right' },
   ];
 
   for (const cat of enabledCategories) {
@@ -355,28 +363,50 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
     sectionBar(`${cat} Estimate`);
     tHead(colDefs);
 
+    // Group items by subCategory
+    const subGroups = new Map<string, typeof catItems>();
+    for (const item of catItems) {
+      const key = item.subCategory || '';
+      if (!subGroups.has(key)) subGroups.set(key, []);
+      subGroups.get(key)!.push(item);
+    }
+
     let catSubtotal = 0;
-    catItems.forEach((item, idx) => {
-      catSubtotal += item.amount;
-      tRow([
-        { val: String(idx + 1),           w: colDefs[0].w },
-        { val: item.description,           w: colDefs[1].w },
-        { val: String(item.quantity),      w: colDefs[2].w, align: 'right' },
-        { val: item.unit,                  w: colDefs[3].w },
-        { val: fmtCurrency(item.rate),     w: colDefs[4].w, align: 'right' },
-        { val: item.uplift > 0 ? `${item.uplift}%` : '—', w: colDefs[5].w, align: 'right' },
-        { val: fmtCurrency(item.amount),   w: colDefs[6].w, align: 'right', bold: true },
-      ], idx % 2 === 1);
-    });
+    let rowIdx = 0;
+    for (const [subCat, groupItems] of subGroups) {
+      // Sub-category header row
+      if (subCat && subGroups.size > 1) {
+        ensureSpace(18);
+        const scY = doc.y;
+        doc.rect(LM, scY, PW, 16).fill('#F1F5F9');
+        doc.fontSize(7).font('Helvetica-Bold').fillColor('#475569').text(subCat.toUpperCase(), LM + 8, scY + 4, { width: PW - 16, characterSpacing: 0.3 });
+        doc.y = scY + 16;
+      }
+
+      for (const item of groupItems) {
+        catSubtotal += item.amount;
+        tRow([
+          { val: String(rowIdx + 1),           w: colDefs[0].w },
+          { val: item.description,              w: colDefs[1].w },
+          { val: item.subCategory || '—',       w: colDefs[2].w },
+          { val: String(item.quantity),         w: colDefs[3].w, align: 'right' },
+          { val: item.unit,                     w: colDefs[4].w },
+          { val: fmtCurrency(item.rate),        w: colDefs[5].w, align: 'right' },
+          { val: item.uplift > 0 ? `${item.uplift}%` : '—', w: colDefs[6].w, align: 'right' },
+          { val: fmtCurrency(item.amount),      w: colDefs[7].w, align: 'right', bold: true },
+        ], rowIdx % 2 === 1);
+        rowIdx++;
+      }
+    }
 
     // Sub-total row
     ensureSpace(24);
     const stY = doc.y;
     doc.rect(LM, stY, PW, 22).fill(BG_TOTAL);
     doc.moveTo(LM, stY).lineTo(LM + PW, stY).lineWidth(0.8).strokeColor(ACCENT).stroke();
-    const stLabelW = colDefs[0].w + colDefs[1].w + colDefs[2].w + colDefs[3].w + colDefs[4].w + colDefs[5].w;
+    const stLabelW = colDefs.slice(0, -1).reduce((s, c) => s + c.w, 0);
     doc.fontSize(9).font('Helvetica-Bold').fillColor(NAVY).text(`Sub-Total (${cat})`, LM + 8, stY + 6, { width: stLabelW - 16, align: 'right' });
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(NAVY).text(fmtCurrency(catSubtotal), LM + stLabelW + 6, stY + 6, { width: colDefs[6].w - 12, align: 'right' });
+    doc.fontSize(9).font('Helvetica-Bold').fillColor(NAVY).text(fmtCurrency(catSubtotal), LM + stLabelW + 6, stY + 6, { width: colDefs[colDefs.length - 1].w - 12, align: 'right' });
     doc.y = stY + 24;
   }
 
@@ -444,7 +474,7 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
   doc.rect(LM, termsY, PW, 60).lineWidth(0.5).strokeColor(RULE).stroke();
   doc.rect(LM, termsY, PW, 18).fill(BG_ALT);
   doc.fontSize(7.5).font('Helvetica-Bold').fillColor(LIGHT).text('TERMS & CONDITIONS', LM + 10, termsY + 5, { characterSpacing: 0.5 });
-  const termsText = [
+  const termsText = quotation.termsAndConditions || [
     'This quotation is valid for 30 days from the date of issue unless otherwise stated.',
     'All prices are quoted in GBP (£) and are subject to the terms outlined above.',
     `Payment terms: 30 days from date of invoice. All works subject to ${company.name} standard terms and conditions.`,

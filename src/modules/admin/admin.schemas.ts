@@ -12,6 +12,7 @@ export const createClientSchema = z.object({
   comContactName: z.string().optional(),
   comContactEmail: z.string().email().optional().or(z.literal('')),
   comContactPhone: z.string().optional(),
+  defaultTerms: z.string().optional(),
 });
 
 export const updateClientSchema = createClientSchema.partial();
@@ -175,6 +176,7 @@ const quotationCategory = z.enum(['Labour', 'Plant', 'Material', 'Other']);
 export const createRateCardSchema = z.object({
   clientId: z.string().uuid(),
   category: rateCardCategory,
+  subCategory: z.string().optional(),
   resourceName: z.string().min(1, 'Resource name is required'),
   description: z.string().optional(),
   unit: z.string().optional(),
@@ -188,6 +190,7 @@ export const createRateCardSchema = z.object({
 
 export const updateRateCardSchema = z.object({
   resourceName: z.string().min(1).optional(),
+  subCategory: z.string().optional(),
   description: z.string().optional(),
   unit: z.string().optional(),
   dayRateHourly: z.number().min(0).optional(),
@@ -214,6 +217,7 @@ const quotationSectionSchema = z.object({
 
 const quotationItemSchema = z.object({
   category: quotationCategory,
+  subCategory: z.string().optional(),
   description: z.string().min(1, 'Description is required'),
   quantity: z.number().positive('Quantity must be positive'),
   unit: z.string().min(1, 'Unit is required'),
@@ -233,6 +237,7 @@ export const createQuotationSchema = z.object({
   enabledCategories: z.array(quotationCategory).min(1, 'Enable at least one category'),
   vatPercent: z.number().min(0).max(100).nullable().optional(),
   note: z.string().optional(),
+  termsAndConditions: z.string().optional(),
   status: z.enum(['DRAFT', 'FINAL']).optional().default('DRAFT'),
   sections: z.array(quotationSectionSchema).min(1, 'At least one methodology section is required'),
   items: z.array(quotationItemSchema).min(1, 'At least one estimate item is required'),

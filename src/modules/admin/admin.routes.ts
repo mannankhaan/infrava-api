@@ -16,6 +16,17 @@ const upload = multer({
     }
   },
 });
+const spreadsheetUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (file.originalname.match(/\.(xlsx|csv)$/i)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only .xlsx and .csv files are allowed'));
+    }
+  },
+});
 import {
   createFaultSchema, updateFaultSchema,
   assignOperativeSchema, reassignSchema, rejectSchema,
@@ -88,6 +99,8 @@ router.patch('/deletion-requests/:id', requirePermission('gdpr', 'process'), val
 // Rate Cards
 router.post('/rate-cards', requirePermission('quotations', 'create'), validate(createRateCardSchema), ctrl.createRateCard);
 router.get('/rate-cards', requirePermission('quotations', 'view'), ctrl.listRateCards);
+router.post('/rate-cards/import', requirePermission('quotations', 'create'), spreadsheetUpload.single('file'), ctrl.importRateCards);
+router.get('/rate-cards/export', requirePermission('quotations', 'view'), ctrl.exportRateCards);
 router.get('/rate-cards/:id', requirePermission('quotations', 'view'), ctrl.getRateCard);
 router.patch('/rate-cards/:id', requirePermission('quotations', 'edit'), validate(updateRateCardSchema), ctrl.updateRateCard);
 router.delete('/rate-cards/:id', requirePermission('quotations', 'delete'), ctrl.deleteRateCard);

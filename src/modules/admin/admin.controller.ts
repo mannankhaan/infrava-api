@@ -1,4 +1,6 @@
 import { Response } from 'express';
+import ExcelJS from 'exceljs';
+import { Readable } from 'stream';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../../config/prisma';
 import { env } from '../../config/env';
@@ -955,7 +957,7 @@ export async function listRateCards(req: AuthRequest, res: Response): Promise<vo
       ...(clientId && { clientId }),
       ...(category && { category }),
     },
-    orderBy: [{ category: 'asc' }, { resourceName: 'asc' }],
+    orderBy: [{ subCategory: 'asc' }, { resourceName: 'asc' }],
   });
 
   res.json({ success: true, data: rateCards });
@@ -1007,6 +1009,276 @@ export async function deleteRateCard(req: AuthRequest, res: Response): Promise<v
   res.json({ success: true, data: { message: 'Rate card deleted' } });
 }
 
+export async function importRateCards(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const adminId = getAdminId(req);
+    const file = req.file;
+    if (!file) {
+      res.status(400).json({ success: false, error: 'No file uploaded' });
+      return;
+    }
+
+    const clientId = req.body.clientId;
+    const category = req.body.category;
+
+    if (!clientId || !category) {
+      res.status(400).json({ success: false, error: 'clientId and category are required' });
+      return;
+    }
+
+    // Verify client belongs to admin
+    const client = await prisma.client.findFirst({ where: { id: clientId, adminId } });
+    if (!client) {
+      res.status(404).json({ success: false, error: 'Client not found' });
+      return;
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    if (file.originalname.match(/\.csv$/i)) {
+      const stream = new Readable();
+      stream.push(file.buffer);
+      stream.push(null);
+      await workbook.csv.read(stream);
+    } else {
+      await workbook.xlsx.load(file.buffer as unknown as ExcelJS.Buffer);
+    }
+
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) {
+      res.status(400).json({ success: false, error: 'No worksheet found' });
+      return;
+    }
+
+    // Get headers from first row
+    const headers: string[] = [];
+    worksheet.getRow(1).eachCell((cell, colNumber) => {
+      headers[colNumber] = String(cell.value || '').trim().toUpperCase();
+    });
+
+    // Resolve a cell value, evaluating simple formulas if needed
+    const resolveCell = (row: ExcelJS.Row, colNum: number): number => {
+      const cell = row.getCell(colNum);
+      const val = cell.value;
+      if (typeof val === 'number') return val;
+      if (typeof val === 'string') {
+        const cleaned = val.replace(/[£,\s]/g, '');
+        const num = parseFloat(cleaned);
+        return isNaN(num) ? 0 : num;
+      }
+      if (val && typeof val === 'object') {
+        // Check for cached result first
+        if ('result' in val) {
+          const result = (val as { result: unknown }).result;
+          if (typeof result === 'number') return result;
+        }
+        // Evaluate simple formulas: "C2*(125%)", "C2*10", "D2*10"
+        if ('formula' in val) {
+          const formula = (val as { formula: string }).formula;
+          // Pattern: CELL_REF * MULTIPLIER e.g. "C2*(125%)" or "C2*10"
+          const match = formula.match(/^([A-Z])(\d+)\*\(?(\d+)(%?)\)?$/);
+          if (match) {
+            const refCol = match[1].charCodeAt(0) - 64; // A=1, B=2, C=3...
+            const multiplierNum = parseFloat(match[3]);
+            const isPercent = match[4] === '%';
+            const refVal = resolveCell(row, refCol);
+            const multiplier = isPercent ? multiplierNum / 100 : multiplierNum;
+            return Math.round(refVal * multiplier * 100) / 100;
+          }
+        }
+      }
+      return 0;
+    };
+
+    const parseRate = (row: ExcelJS.Row, colNum: number): number => {
+      return resolveCell(row, colNum);
+    };
+
+    const rows: Array<{
+      resourceName: string;
+      subCategory: string | null;
+      description: string | null;
+      unit: string | null;
+      dayRateHourly: number;
+      nightRateHourly: number;
+      weekendRateHourly: number;
+      dayRateShift: number;
+      nightRateShift: number;
+      weekendRateShift: number;
+    }> = [];
+
+    // Build column index map
+    const colMap: Record<string, number> = {};
+    headers.forEach((h, i) => { colMap[h] = i; });
+
+    const isMaterial = category === 'Material';
+
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return; // skip header
+
+      const getCellStr = (colNames: string[]): string => {
+        for (const name of colNames) {
+          const idx = colMap[name];
+          if (idx) {
+            const val = row.getCell(idx).value;
+            return String(val || '').trim();
+          }
+        }
+        return '';
+      };
+
+      const getCellRate = (colNames: string[]): number => {
+        for (const name of colNames) {
+          const idx = colMap[name];
+          if (idx) return parseRate(row, idx);
+        }
+        return 0;
+      };
+
+      const resourceName = getCellStr(isMaterial ? ['MATERIAL NAME'] : ['RESOURCE NAME']);
+      if (!resourceName) return; // skip empty rows
+
+      const subCategory = getCellStr(['CATEGORY', 'SUB-CATEGORY']) || null;
+
+      if (isMaterial) {
+        rows.push({
+          resourceName,
+          subCategory,
+          description: getCellStr(['DESCRIPTION']) || null,
+          unit: getCellStr(['UNIT']) || null,
+          dayRateHourly: getCellRate(['BASE RATE']),
+          nightRateHourly: 0,
+          weekendRateHourly: 0,
+          dayRateShift: 0,
+          nightRateShift: 0,
+          weekendRateShift: 0,
+        });
+      } else {
+        rows.push({
+          resourceName,
+          subCategory,
+          description: null,
+          unit: null,
+          dayRateHourly: getCellRate(['DAY/HR', 'DAY/HR\t']),
+          nightRateHourly: getCellRate(['NIGHT/HR']),
+          weekendRateHourly: getCellRate(['WKND/HR']),
+          dayRateShift: getCellRate(['DAY/SHIFT']),
+          nightRateShift: getCellRate(['NIGHT/SHIFT']),
+          weekendRateShift: getCellRate(['WKND/SHIFT']),
+        });
+      }
+    });
+
+    if (rows.length === 0) {
+      res.status(400).json({ success: false, error: 'No valid rows found in file' });
+      return;
+    }
+
+    // Upsert in transaction
+    const results = await prisma.$transaction(
+      rows.map(row => prisma.rateCard.upsert({
+        where: {
+          clientId_category_subCategory_resourceName: {
+            clientId,
+            category,
+            subCategory: row.subCategory || '',
+            resourceName: row.resourceName,
+          },
+        },
+        update: {
+          ...row,
+          subCategory: row.subCategory,
+        },
+        create: {
+          adminId,
+          clientId,
+          category,
+          ...row,
+        },
+      }))
+    );
+
+    res.json({ success: true, data: { imported: results.length } });
+  } catch (err) {
+    console.error('Import error:', err);
+    res.status(400).json({ success: false, error: 'Failed to parse file. Check format matches expected columns.' });
+  }
+}
+
+export async function exportRateCards(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const adminId = getAdminId(req);
+    const clientId = req.query.clientId as string;
+    const category = req.query.category as string;
+
+    if (!clientId || !category) {
+      res.status(400).json({ success: false, error: 'clientId and category are required' });
+      return;
+    }
+
+    const rateCards = await prisma.rateCard.findMany({
+      where: { adminId, clientId, category },
+      orderBy: [{ subCategory: 'asc' }, { resourceName: 'asc' }],
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet(category);
+    const isMaterial = category === 'Material';
+
+    if (isMaterial) {
+      worksheet.columns = [
+        { header: 'MATERIAL NAME', key: 'resourceName', width: 35 },
+        { header: 'CATEGORY', key: 'subCategory', width: 25 },
+        { header: 'DESCRIPTION', key: 'description', width: 40 },
+        { header: 'UNIT', key: 'unit', width: 12 },
+        { header: 'BASE RATE', key: 'dayRateHourly', width: 14 },
+      ];
+    } else {
+      worksheet.columns = [
+        { header: 'RESOURCE NAME', key: 'resourceName', width: 35 },
+        { header: 'CATEGORY', key: 'subCategory', width: 25 },
+        { header: 'DAY/HR', key: 'dayRateHourly', width: 14 },
+        { header: 'NIGHT/HR', key: 'nightRateHourly', width: 14 },
+        { header: 'WKND/HR', key: 'weekendRateHourly', width: 14 },
+        { header: 'DAY/SHIFT', key: 'dayRateShift', width: 14 },
+        { header: 'NIGHT/SHIFT', key: 'nightRateShift', width: 14 },
+        { header: 'WKND/SHIFT', key: 'weekendRateShift', width: 14 },
+      ];
+    }
+
+    rateCards.forEach(rc => {
+      worksheet.addRow({
+        resourceName: rc.resourceName,
+        subCategory: rc.subCategory || '',
+        description: rc.description || '',
+        unit: rc.unit || '',
+        dayRateHourly: rc.dayRateHourly,
+        nightRateHourly: rc.nightRateHourly,
+        weekendRateHourly: rc.weekendRateHourly,
+        dayRateShift: rc.dayRateShift,
+        nightRateShift: rc.nightRateShift,
+        weekendRateShift: rc.weekendRateShift,
+      });
+    });
+
+    // Style header
+    worksheet.getRow(1).font = { bold: true };
+
+    // Apply £ currency format to rate columns
+    const rateCols = isMaterial ? [5] : [3, 4, 5, 6, 7, 8];
+    rateCols.forEach(colNum => {
+      worksheet.getColumn(colNum).numFmt = '£#,##0.00';
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${category}-Rate-Cards.xlsx"`);
+    res.send(Buffer.from(buffer as ArrayBuffer));
+  } catch (err) {
+    console.error('Export error:', err);
+    res.status(500).json({ success: false, error: 'Failed to export rate cards' });
+  }
+}
+
 // ─── Quotations ────────────────────────────────────────────────────
 
 function computeAmount(quantity: number, rate: number, uplift: number): number {
@@ -1029,7 +1301,7 @@ function computeQuotationTotals(items: { category: string; amount: number }[], v
 }
 
 export async function createQuotation(req: AuthRequest, res: Response): Promise<void> {
-  const { clientId, title, clientReference, workDescription, enabledCategories, vatPercent, note, status, sections, items } = req.body as CreateQuotationInput;
+  const { clientId, title, clientReference, workDescription, enabledCategories, vatPercent, note, termsAndConditions, status, sections, items } = req.body as CreateQuotationInput;
 
   if (!clientId) {
     res.status(400).json({ success: false, error: 'Client is required' });
@@ -1050,11 +1322,13 @@ export async function createQuotation(req: AuthRequest, res: Response): Promise<
       enabledCategories,
       vatPercent: vatPercent ?? null,
       note: note || null,
+      termsAndConditions: termsAndConditions || null,
       status: status || 'DRAFT',
       items: {
         create: items.map((item, i) => ({
           itemNo: i + 1,
           category: item.category,
+          subCategory: item.subCategory || null,
           description: item.description,
           quantity: item.quantity,
           unit: item.unit,
@@ -1125,7 +1399,7 @@ export async function updateQuotation(req: AuthRequest, res: Response): Promise<
     return;
   }
 
-  const { title, clientReference, workDescription, enabledCategories, vatPercent, note, status, sections, items } = req.body as UpdateQuotationInput;
+  const { title, clientReference, workDescription, enabledCategories, vatPercent, note, termsAndConditions, status, sections, items } = req.body as UpdateQuotationInput;
 
   await prisma.$transaction(async (tx) => {
     await tx.quotation.update({
@@ -1138,6 +1412,7 @@ export async function updateQuotation(req: AuthRequest, res: Response): Promise<
         ...(enabledCategories !== undefined && { enabledCategories }),
         ...(vatPercent !== undefined && { vatPercent: vatPercent ?? null }),
         ...(note !== undefined && { note: note || null }),
+        ...(termsAndConditions !== undefined && { termsAndConditions: termsAndConditions || null }),
         ...(status !== undefined && { status }),
       },
     });
@@ -1149,6 +1424,7 @@ export async function updateQuotation(req: AuthRequest, res: Response): Promise<
           quotationId: quotation.id,
           itemNo: i + 1,
           category: item.category,
+          subCategory: item.subCategory || null,
           description: item.description,
           quantity: item.quantity,
           unit: item.unit,
@@ -1236,11 +1512,13 @@ export async function reviseQuotation(req: AuthRequest, res: Response): Promise<
       enabledCategories: quotation.enabledCategories as any,
       vatPercent: quotation.vatPercent,
       note: quotation.note,
+      termsAndConditions: quotation.termsAndConditions,
       status: 'DRAFT',
       items: {
         create: quotation.items.map((item, i) => ({
           itemNo: i + 1,
           category: item.category,
+          subCategory: item.subCategory || null,
           description: item.description,
           quantity: item.quantity,
           unit: item.unit,
@@ -1336,6 +1614,7 @@ export async function createClient(req: AuthRequest, res: Response): Promise<voi
       comContactName: input.comContactName || undefined,
       comContactEmail: input.comContactEmail || undefined,
       comContactPhone: input.comContactPhone || undefined,
+      defaultTerms: input.defaultTerms || undefined,
     },
   });
 
@@ -1400,6 +1679,7 @@ export async function updateClient(req: AuthRequest, res: Response): Promise<voi
       ...(input.comContactName !== undefined && { comContactName: input.comContactName || null }),
       ...(input.comContactEmail !== undefined && { comContactEmail: input.comContactEmail || null }),
       ...(input.comContactPhone !== undefined && { comContactPhone: input.comContactPhone || null }),
+      ...(input.defaultTerms !== undefined && { defaultTerms: input.defaultTerms || null }),
     },
   });
 
