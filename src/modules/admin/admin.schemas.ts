@@ -186,6 +186,7 @@ export const createRateCardSchema = z.object({
   dayRateShift: z.number().min(0).default(0),
   nightRateShift: z.number().min(0).default(0),
   weekendRateShift: z.number().min(0).default(0),
+  uplift: z.number().min(0).default(0),
 });
 
 export const updateRateCardSchema = z.object({
@@ -199,6 +200,7 @@ export const updateRateCardSchema = z.object({
   dayRateShift: z.number().min(0).optional(),
   nightRateShift: z.number().min(0).optional(),
   weekendRateShift: z.number().min(0).optional(),
+  uplift: z.number().min(0).optional(),
 });
 
 export type CreateRateCardInput = z.infer<typeof createRateCardSchema>;

@@ -620,7 +620,7 @@ export async function listOperatives(req: AuthRequest, res: Response): Promise<v
       id: true, name: true, email: true, lastLoginAt: true, createdAt: true,
       operativeAssignedFaults: {
         where: { status: { not: FaultStatus.COMPLETED } },
-        select: { id: true, projectRef: true, title: true, status: true },
+        select: { id: true, projectRef: true, title: true, status: true, clientId: true },
         take: 1,
       },
     },
@@ -977,22 +977,29 @@ export async function getRateCard(req: AuthRequest, res: Response): Promise<void
 }
 
 export async function updateRateCard(req: AuthRequest, res: Response): Promise<void> {
-  const rateCard = await prisma.rateCard.findFirst({
-    where: { id: req.params.id as string, adminId: getAdminId(req) },
-  });
+  try {
+    const rateCard = await prisma.rateCard.findFirst({
+      where: { id: req.params.id as string, adminId: getAdminId(req) },
+    });
 
-  if (!rateCard) {
-    res.status(404).json({ success: false, error: 'Rate card not found' });
-    return;
+    if (!rateCard) {
+      res.status(404).json({ success: false, error: 'Rate card not found' });
+      return;
+    }
+
+    const input = req.body as UpdateRateCardInput;
+    // Strip undefined values to avoid Prisma issues
+    const data = Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined));
+    const updated = await prisma.rateCard.update({
+      where: { id: rateCard.id },
+      data,
+    });
+
+    res.json({ success: true, data: updated });
+  } catch (err) {
+    console.error('Update rate card error:', err);
+    res.status(500).json({ success: false, error: 'Failed to update rate card' });
   }
-
-  const input = req.body as UpdateRateCardInput;
-  const updated = await prisma.rateCard.update({
-    where: { id: rateCard.id },
-    data: input,
-  });
-
-  res.json({ success: true, data: updated });
 }
 
 export async function deleteRateCard(req: AuthRequest, res: Response): Promise<void> {
@@ -1007,6 +1014,20 @@ export async function deleteRateCard(req: AuthRequest, res: Response): Promise<v
 
   await prisma.rateCard.delete({ where: { id: rateCard.id } });
   res.json({ success: true, data: { message: 'Rate card deleted' } });
+}
+
+export async function bulkDeleteRateCards(req: AuthRequest, res: Response): Promise<void> {
+  const { ids } = req.body as { ids: string[] };
+  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+    res.status(400).json({ success: false, error: 'ids array is required' });
+    return;
+  }
+
+  const result = await prisma.rateCard.deleteMany({
+    where: { id: { in: ids }, adminId: getAdminId(req) },
+  });
+
+  res.json({ success: true, data: { deleted: result.count } });
 }
 
 export async function importRateCards(req: AuthRequest, res: Response): Promise<void> {
@@ -1104,6 +1125,7 @@ export async function importRateCards(req: AuthRequest, res: Response): Promise<
       dayRateShift: number;
       nightRateShift: number;
       weekendRateShift: number;
+      uplift: number;
     }> = [];
 
     // Build column index map
@@ -1134,7 +1156,8 @@ export async function importRateCards(req: AuthRequest, res: Response): Promise<
         return 0;
       };
 
-      const resourceName = getCellStr(isMaterial ? ['MATERIAL NAME'] : ['RESOURCE NAME']);
+      const isPlant = category === 'Plant';
+      const resourceName = getCellStr(isMaterial ? ['MATERIAL NAME'] : isPlant ? ['PLANT NAME', 'RESOURCE NAME'] : ['RESOURCE NAME']);
       if (!resourceName) return; // skip empty rows
 
       const subCategory = getCellStr(['CATEGORY', 'SUB-CATEGORY']) || null;
@@ -1151,6 +1174,21 @@ export async function importRateCards(req: AuthRequest, res: Response): Promise<
           dayRateShift: 0,
           nightRateShift: 0,
           weekendRateShift: 0,
+          uplift: getCellRate(['UPLIFT', 'UPLIFT %', 'UPLIFT%']),
+        });
+      } else if (isPlant) {
+        rows.push({
+          resourceName,
+          subCategory,
+          description: null,
+          unit: null,
+          dayRateHourly: getCellRate(['DAY RATE', 'DAY/HR']),
+          nightRateHourly: 0,
+          weekendRateHourly: 0,
+          dayRateShift: getCellRate(['WEEKLY RATE', 'DAY/SHIFT']),
+          nightRateShift: 0,
+          weekendRateShift: 0,
+          uplift: 0,
         });
       } else {
         rows.push({
@@ -1164,6 +1202,7 @@ export async function importRateCards(req: AuthRequest, res: Response): Promise<
           dayRateShift: getCellRate(['DAY/SHIFT']),
           nightRateShift: getCellRate(['NIGHT/SHIFT']),
           weekendRateShift: getCellRate(['WKND/SHIFT']),
+          uplift: 0,
         });
       }
     });
@@ -1173,9 +1212,16 @@ export async function importRateCards(req: AuthRequest, res: Response): Promise<
       return;
     }
 
+    // Deduplicate rows by (subCategory + resourceName) — last occurrence wins
+    const deduped = new Map<string, (typeof rows)[number]>();
+    for (const row of rows) {
+      deduped.set(`${row.subCategory || ''}::${row.resourceName}`, row);
+    }
+    const uniqueRows = Array.from(deduped.values());
+
     // Upsert in transaction
     const results = await prisma.$transaction(
-      rows.map(row => prisma.rateCard.upsert({
+      uniqueRows.map(row => prisma.rateCard.upsert({
         where: {
           clientId_category_subCategory_resourceName: {
             clientId,
@@ -1204,6 +1250,79 @@ export async function importRateCards(req: AuthRequest, res: Response): Promise<
   }
 }
 
+function getRateCardColumns(category: string): { columns: Partial<ExcelJS.Column>[]; rateCols: number[] } {
+  if (category === 'Material') {
+    return {
+      columns: [
+        { header: 'MATERIAL NAME', key: 'resourceName', width: 35 },
+        { header: 'CATEGORY', key: 'subCategory', width: 25 },
+        { header: 'DESCRIPTION', key: 'description', width: 40 },
+        { header: 'UNIT', key: 'unit', width: 12 },
+        { header: 'BASE RATE', key: 'dayRateHourly', width: 14 },
+        { header: 'UPLIFT %', key: 'uplift', width: 12 },
+      ],
+      rateCols: [5],
+    };
+  }
+  if (category === 'Plant') {
+    return {
+      columns: [
+        { header: 'PLANT NAME', key: 'resourceName', width: 35 },
+        { header: 'CATEGORY', key: 'subCategory', width: 25 },
+        { header: 'DAY RATE', key: 'dayRateHourly', width: 14 },
+        { header: 'WEEKLY RATE', key: 'dayRateShift', width: 14 },
+      ],
+      rateCols: [3, 4],
+    };
+  }
+  // Labour
+  return {
+    columns: [
+      { header: 'RESOURCE NAME', key: 'resourceName', width: 35 },
+      { header: 'CATEGORY', key: 'subCategory', width: 25 },
+      { header: 'DAY/HR', key: 'dayRateHourly', width: 14 },
+      { header: 'NIGHT/HR', key: 'nightRateHourly', width: 14 },
+      { header: 'WKND/HR', key: 'weekendRateHourly', width: 14 },
+      { header: 'DAY/SHIFT', key: 'dayRateShift', width: 14 },
+      { header: 'NIGHT/SHIFT', key: 'nightRateShift', width: 14 },
+      { header: 'WKND/SHIFT', key: 'weekendRateShift', width: 14 },
+    ],
+    rateCols: [3, 4, 5, 6, 7, 8],
+  };
+}
+
+export async function templateRateCards(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const category = req.query.category as string;
+    if (!category || !['Labour', 'Plant', 'Material'].includes(category)) {
+      res.status(400).json({ success: false, error: 'Valid category is required (Labour, Plant, Material)' });
+      return;
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet(category);
+    const { columns: cols, rateCols } = getRateCardColumns(category);
+    worksheet.columns = cols;
+
+    // Style header
+    worksheet.getRow(1).font = { bold: true };
+    worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F0FE' } };
+
+    // Apply £ currency format to rate columns
+    rateCols.forEach(colNum => {
+      worksheet.getColumn(colNum).numFmt = '£#,##0.00';
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${category}-Rate-Card-Template.xlsx"`);
+    res.send(Buffer.from(buffer as ArrayBuffer));
+  } catch (err) {
+    console.error('Template error:', err);
+    res.status(500).json({ success: false, error: 'Failed to generate template' });
+  }
+}
+
 export async function exportRateCards(req: AuthRequest, res: Response): Promise<void> {
   try {
     const adminId = getAdminId(req);
@@ -1222,28 +1341,8 @@ export async function exportRateCards(req: AuthRequest, res: Response): Promise<
 
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet(category);
-    const isMaterial = category === 'Material';
-
-    if (isMaterial) {
-      worksheet.columns = [
-        { header: 'MATERIAL NAME', key: 'resourceName', width: 35 },
-        { header: 'CATEGORY', key: 'subCategory', width: 25 },
-        { header: 'DESCRIPTION', key: 'description', width: 40 },
-        { header: 'UNIT', key: 'unit', width: 12 },
-        { header: 'BASE RATE', key: 'dayRateHourly', width: 14 },
-      ];
-    } else {
-      worksheet.columns = [
-        { header: 'RESOURCE NAME', key: 'resourceName', width: 35 },
-        { header: 'CATEGORY', key: 'subCategory', width: 25 },
-        { header: 'DAY/HR', key: 'dayRateHourly', width: 14 },
-        { header: 'NIGHT/HR', key: 'nightRateHourly', width: 14 },
-        { header: 'WKND/HR', key: 'weekendRateHourly', width: 14 },
-        { header: 'DAY/SHIFT', key: 'dayRateShift', width: 14 },
-        { header: 'NIGHT/SHIFT', key: 'nightRateShift', width: 14 },
-        { header: 'WKND/SHIFT', key: 'weekendRateShift', width: 14 },
-      ];
-    }
+    const { columns: cols, rateCols } = getRateCardColumns(category);
+    worksheet.columns = cols;
 
     rateCards.forEach(rc => {
       worksheet.addRow({
@@ -1257,6 +1356,7 @@ export async function exportRateCards(req: AuthRequest, res: Response): Promise<
         dayRateShift: rc.dayRateShift,
         nightRateShift: rc.nightRateShift,
         weekendRateShift: rc.weekendRateShift,
+        uplift: rc.uplift || 0,
       });
     });
 
@@ -1264,7 +1364,6 @@ export async function exportRateCards(req: AuthRequest, res: Response): Promise<
     worksheet.getRow(1).font = { bold: true };
 
     // Apply £ currency format to rate columns
-    const rateCols = isMaterial ? [5] : [3, 4, 5, 6, 7, 8];
     rateCols.forEach(colNum => {
       worksheet.getColumn(colNum).numFmt = '£#,##0.00';
     });

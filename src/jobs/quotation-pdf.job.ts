@@ -347,8 +347,8 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
   const enabledCategories = quotation.enabledCategories as string[];
   const colDefs = [
     { label: '#',           w: PW * 0.05, align: 'left' },
-    { label: 'Description', w: PW * 0.22, align: 'left' },
     { label: 'Category',    w: PW * 0.16, align: 'left' },
+    { label: 'Description', w: PW * 0.22, align: 'left' },
     { label: 'Qty',         w: PW * 0.08, align: 'right' },
     { label: 'Unit',        w: PW * 0.09, align: 'left' },
     { label: 'Rate',        w: PW * 0.12, align: 'right' },
@@ -387,8 +387,8 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
         catSubtotal += item.amount;
         tRow([
           { val: String(rowIdx + 1),           w: colDefs[0].w },
-          { val: item.description,              w: colDefs[1].w },
-          { val: item.subCategory || '—',       w: colDefs[2].w },
+          { val: item.subCategory || '—',       w: colDefs[1].w },
+          { val: item.description,              w: colDefs[2].w },
           { val: String(item.quantity),         w: colDefs[3].w, align: 'right' },
           { val: item.unit,                     w: colDefs[4].w },
           { val: fmtCurrency(item.rate),        w: colDefs[5].w, align: 'right' },

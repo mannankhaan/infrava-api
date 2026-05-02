@@ -476,6 +476,7 @@ model RateCard {
   dayRateShift      Float    @default(0) @map("day_rate_shift") @db.DoublePrecision
   nightRateShift    Float    @default(0) @map("night_rate_shift") @db.DoublePrecision
   weekendRateShift  Float    @default(0) @map("weekend_rate_shift") @db.DoublePrecision
+  uplift            Float    @default(0) @db.DoublePrecision
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz()
 
