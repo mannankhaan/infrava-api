@@ -76,12 +76,6 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
     abn:     quotation.admin.companyAbn || '',
   };
 
-  // Load admin company logo
-  let companyLogoBuf: Buffer | null = null;
-  if (quotation.admin.logoUrl) {
-    companyLogoBuf = await loadImage(quotation.admin.logoUrl);
-  }
-
   // Load client logo
   let clientLogoBuf: Buffer | null = null;
   if (quotation.client?.logoR2Key) {
@@ -198,13 +192,9 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
 
   const headerTop = 20;
 
-  // Left side: client logo or client initial
+  // Left side: client logo
   if (clientLogoBuf) {
     try { doc.image(clientLogoBuf, LM, headerTop, { fit: [110, 40] }); } catch { /* skip */ }
-  } else if (quotation.client) {
-    const initial = quotation.client.name.charAt(0).toUpperCase();
-    doc.roundedRect(LM, headerTop, 40, 40, 6).fill(NAVY);
-    doc.fontSize(20).font('Helvetica-Bold').fillColor(WHITE).text(initial, LM + 12, headerTop + 10);
   }
 
   // Right side: admin company details
