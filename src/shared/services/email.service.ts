@@ -11,9 +11,6 @@ const transporter = nodemailer.createTransport({
     user: env.EMAIL_USER,
     pass: env.EMAIL_PASS,
   },
-  tls: {
-    ciphers: 'SSLv3'
-  }
 });
 
 interface SendEmailOptions {

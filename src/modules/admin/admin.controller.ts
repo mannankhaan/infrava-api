@@ -1667,7 +1667,7 @@ export async function downloadQuotationPdf(req: AuthRequest, res: Response): Pro
       },
       client: {
         select: {
-          name: true, address: true,
+          name: true, address: true, logoR2Key: true,
           opsContactName: true, opsContactEmail: true, opsContactPhone: true,
           comContactName: true, comContactEmail: true, comContactPhone: true,
         },

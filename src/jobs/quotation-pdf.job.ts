@@ -4,7 +4,7 @@ import { getFile } from '../shared/services/storage.service';
 
 type QuotationWithRelations = Quotation & {
   admin: Pick<User, 'id' | 'name' | 'email' | 'companyName' | 'companyAddress' | 'companyWebsite' | 'companyPhone' | 'companyEmail' | 'companyAbn' | 'logoUrl'>;
-  client: Pick<Client, 'name' | 'address' | 'opsContactName' | 'opsContactEmail' | 'opsContactPhone' | 'comContactName' | 'comContactEmail' | 'comContactPhone'> | null;
+  client: Pick<Client, 'name' | 'address' | 'opsContactName' | 'opsContactEmail' | 'opsContactPhone' | 'comContactName' | 'comContactEmail' | 'comContactPhone' | 'logoR2Key'> | null;
   items: QuotationItem[];
   parent: Pick<Quotation, 'id' | 'quotationRef' | 'revisionNumber' | 'title'> | null;
 };
@@ -80,6 +80,12 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
   let companyLogoBuf: Buffer | null = null;
   if (quotation.admin.logoUrl) {
     companyLogoBuf = await loadImage(quotation.admin.logoUrl);
+  }
+
+  // Load client logo
+  let clientLogoBuf: Buffer | null = null;
+  if (quotation.client?.logoR2Key) {
+    try { clientLogoBuf = await getFile(quotation.client.logoR2Key); } catch { /* skip */ }
   }
 
   // ── Layout helpers ──
@@ -194,20 +200,21 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
 
   // Left side: admin company logo or placeholder
   if (companyLogoBuf) {
-    try { doc.image(companyLogoBuf, LM, headerTop, { height: 40 }); } catch { /* skip */ }
+    try { doc.image(companyLogoBuf, LM, headerTop, { fit: [110, 40] }); } catch { /* skip */ }
   } else {
     const initial = company.name.charAt(0).toUpperCase();
     doc.roundedRect(LM, headerTop, 40, 40, 6).fill(NAVY);
     doc.fontSize(20).font('Helvetica-Bold').fillColor(WHITE).text(initial, LM + 12, headerTop + 10);
   }
 
-  // Right side: company details
-  const rightW = PW * 0.58;
-  const rightX = LM + PW - rightW;
-  let rightY = headerTop;
+  // Right side: client logo (if available)
+  if (clientLogoBuf) {
+    try { doc.image(clientLogoBuf, LM + PW - 110, headerTop, { fit: [110, 40] }); } catch { /* skip */ }
+  }
 
-  doc.fontSize(13).font('Helvetica-Bold').fillColor(NAVY).text(company.name, rightX, rightY, { width: rightW, align: 'right' });
-  rightY += 18;
+  // Company details below logos
+  const detailsY = headerTop + 48;
+  doc.fontSize(12).font('Helvetica-Bold').fillColor(NAVY).text(company.name, LM, detailsY, { width: PW });
 
   const infoLines: string[] = [];
   if (company.address) infoLines.push(company.address);
@@ -217,13 +224,15 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
   if (contactBits.length) infoLines.push(contactBits.join('  |  '));
   if (company.website) infoLines.push(company.website);
   if (company.abn) infoLines.push(`Company Reg: ${company.abn}`);
+
+  let infoY = detailsY + 16;
   for (const line of infoLines) {
-    doc.fontSize(7.5).font('Helvetica').fillColor(MED).text(line, rightX, rightY, { width: rightW, align: 'right' });
-    rightY += 10;
+    doc.fontSize(7.5).font('Helvetica').fillColor(MED).text(line, LM, infoY, { width: PW });
+    infoY += 10;
   }
 
   // Title bar
-  const titleBarY = Math.max(headerTop + 50, rightY + 8);
+  const titleBarY = Math.max(detailsY + 50, infoY + 8);
   const titleLabel = quotation.revisionNumber > 0
     ? `QUOTATION  —  Revision ${quotation.revisionNumber}`
     : 'QUOTATION';
@@ -420,7 +429,7 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
   const vatAmount = vatPercent ? Math.round(totalExclVat * vatPercent / 100 * 100) / 100 : 0;
   const totalInclVat = totalExclVat + vatAmount;
 
-  sectionBar('Financial Summary');
+  sectionBar('Summary');
 
   // Per-category subtotals
   for (const cat of enabledCategories) {
