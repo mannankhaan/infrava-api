@@ -214,78 +214,86 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<Buffe
   }
 
   // ════════════════════════════════════════════════════════════
-  // COVER HEADER
+  // COVER HEADER — Full-width navy banner with logos + company details below
   // ════════════════════════════════════════════════════════════
 
-  doc.rect(0, 0, doc.page.width, 5).fill(NAVY);
+  // Full-width navy banner — logos on sides, title centered vertically
+  const bannerH = 70;
+  doc.rect(0, 0, doc.page.width, bannerH).fill(NAVY);
 
-  const headerTop = 20;
+  const logoFit = 40;
+  const logoMidY = (bannerH - logoFit) / 2; // vertically center logos
 
-  // Left: Infrava logo (always fixed)
+  // Infrava logo (left)
   if (infravaLogoBuf) {
-    try { doc.image(infravaLogoBuf, LM, headerTop, { height: 36 }); } catch { /* skip */ }
+    try { doc.image(infravaLogoBuf, LM, logoMidY, { fit: [100, logoFit] }); } catch { /* skip */ }
   } else {
-    doc.roundedRect(LM, headerTop, 36, 36, 4).fill(NAVY);
-    doc.fontSize(18).font('Helvetica-Bold').fillColor(WHITE).text('I', LM + 11, headerTop + 8);
+    doc.roundedRect(LM, logoMidY, logoFit, logoFit, 6).fill(WHITE);
+    doc.fontSize(22).font('Helvetica-Bold').fillColor(NAVY).text('I', LM + 14, logoMidY + 10);
   }
 
-  // Right: admin company logo + details
-  const rightW = PW * 0.55;
-  const rightX = LM + PW - rightW;
-  let rightY = headerTop;
-
-  const logoSize = 36;
-  const logoGap = 10;
-  const logoX = LM + PW - logoSize;
-  let logoRendered = false;
+  // Admin company logo (right — flush to right margin)
   if (companyLogoBuf) {
-    try {
-      doc.image(companyLogoBuf, logoX, headerTop, { height: logoSize });
-      logoRendered = true;
-    } catch { /* fall through to placeholder */ }
-  }
-  if (!logoRendered) {
+    try { doc.image(companyLogoBuf, LM + PW - 100, logoMidY, { fit: [100, logoFit] }); } catch { /* skip */ }
+  } else {
     const initial = company.name.charAt(0).toUpperCase();
-    doc.roundedRect(logoX, headerTop, logoSize, logoSize, 4).fill(ACCENT);
-    doc.fontSize(18).font('Helvetica-Bold').fillColor(WHITE).text(initial, logoX + 10, headerTop + 8);
+    doc.roundedRect(LM + PW - logoFit, logoMidY, logoFit, logoFit, 6).fill(ACCENT);
+    doc.fontSize(22).font('Helvetica-Bold').fillColor(WHITE).text(initial, LM + PW - logoFit + 13, logoMidY + 10);
   }
 
-  const textRightW = rightW - logoSize - logoGap;
-  doc.fontSize(13).font('Helvetica-Bold').fillColor(NAVY).text(company.name, rightX, headerTop + 10, { width: textRightW, align: 'right' });
+  // "SITE VISIT REPORT" — vertically centered in the banner
+  const titleTextH = 15; // approximate font height
+  const titleY = (bannerH - titleTextH) / 2;
+  doc.fontSize(15).font('Helvetica-Bold').fillColor(WHITE).text('SITE VISIT REPORT', LM, titleY, { width: PW, align: 'center', characterSpacing: 1.5 });
 
-  // Title bar
-  const titleBarY = headerTop + 50;
-  doc.rect(LM, titleBarY, PW, 30).fill(NAVY);
-  doc.fontSize(14).font('Helvetica-Bold').fillColor(WHITE).text('SITE VISIT REPORT', LM + 16, titleBarY + 8, { width: PW * 0.5, characterSpacing: 0.5 });
-  doc.fontSize(9).font('Helvetica').fillColor('#A0B4CF').text(
-    `${fault.projectRef}  |  ${fmtDate(fault.faultDate)}`,
-    LM + 16, titleBarY + 11, { width: PW - 32, align: 'right' }
+  // Company name + details row below banner
+  const detailY = bannerH + 10;
+  doc.fontSize(12).font('Helvetica-Bold').fillColor(NAVY).text(company.name, LM, detailY, { width: PW });
+
+  const infoLine: string[] = [];
+  if (company.address) infoLine.push(company.address);
+  if (company.phone) infoLine.push(company.phone);
+  if (company.email) infoLine.push(company.email);
+  if (company.website) infoLine.push(company.website);
+  if (company.abn) infoLine.push(`Reg: ${company.abn}`);
+
+  let infoY = detailY + 16;
+  if (infoLine.length) {
+    const mid = Math.ceil(infoLine.length / 2);
+    const row1 = infoLine.slice(0, mid).join('   |   ');
+    const row2 = infoLine.slice(mid).join('   |   ');
+    doc.fontSize(7.5).font('Helvetica').fillColor(MED).text(row1, LM, infoY, { width: PW });
+    infoY += 10;
+    if (row2) {
+      doc.fontSize(7.5).font('Helvetica').fillColor(MED).text(row2, LM, infoY, { width: PW });
+      infoY += 10;
+    }
+  }
+
+  // Thin accent line
+  infoY += 4;
+  doc.moveTo(LM, infoY).lineTo(LM + PW, infoY).lineWidth(0.8).strokeColor(ACCENT).stroke();
+
+  // Ref + date bar
+  const refBarY = infoY + 6;
+  doc.fontSize(9).font('Helvetica-Bold').fillColor(NAVY).text(
+    fault.projectRef, LM, refBarY
+  );
+  doc.fontSize(9).font('Helvetica').fillColor(MED).text(
+    fmtDate(fault.faultDate), LM, refBarY, { width: PW, align: 'right' }
   );
 
-  doc.y = titleBarY + 38;
+  doc.y = refBarY + 18;
 
   // ════════════════════════════════════════════════════════════
   // CLIENT / PREPARED BY — side-by-side cards
   // ════════════════════════════════════════════════════════════
 
   {
-    // Build company detail lines for the PREPARED BY card
-    const companyLines: string[] = [];
-    if (company.address) companyLines.push(company.address);
-    if (company.phone || company.email) {
-      const bits: string[] = [];
-      if (company.phone) bits.push(company.phone);
-      if (company.email) bits.push(company.email);
-      companyLines.push(bits.join('  |  '));
-    }
-    if (company.website) companyLines.push(company.website);
-    if (company.abn) companyLines.push(`Company Reg: ${company.abn}`);
-
     const half = (PW - 12) / 2;
-    // Card height: header(20) + name(16) + detail lines(10 each) + padding
-    const cardContentH = 16 + companyLines.length * 11 + 6;
     const clientContentH = 16 + (fault.client?.address ? 11 : 0) + 6;
-    const cardH = Math.max(cardContentH, clientContentH) + 20; // +20 for header
+    const preparedContentH = 16 + 6; // name only, no details
+    const cardH = Math.max(clientContentH, preparedContentH) + 20; // +20 for header
 
     ensureSpace(cardH + 10);
     const cardY = doc.y;
@@ -301,18 +309,13 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<Buffe
       }
     }
 
-    // Prepared By card (right)
+    // Prepared By card (right) — company name only (details already in header)
     const rightCardX = fault.client ? LM + half + 12 : LM;
     const rightCardW = fault.client ? half : PW;
     doc.rect(rightCardX, cardY, rightCardW, cardH).lineWidth(0.5).strokeColor(RULE).stroke();
     doc.rect(rightCardX, cardY, rightCardW, 20).fill(BG_ALT);
     doc.fontSize(7.5).font('Helvetica-Bold').fillColor(LIGHT).text('PREPARED BY', rightCardX + 10, cardY + 6, { characterSpacing: 0.5 });
     doc.fontSize(10).font('Helvetica-Bold').fillColor(NAVY).text(company.name, rightCardX + 10, cardY + 26, { width: rightCardW - 20 });
-    let detailY = cardY + 40;
-    for (const line of companyLines) {
-      doc.fontSize(8).font('Helvetica').fillColor(MED).text(line, rightCardX + 10, detailY, { width: rightCardW - 20 });
-      detailY += 11;
-    }
 
     doc.y = cardY + cardH + 8;
   }

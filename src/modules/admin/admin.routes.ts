@@ -16,6 +16,17 @@ const upload = multer({
     }
   },
 });
+const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'));
+    }
+  },
+});
 const spreadsheetUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
@@ -46,7 +57,7 @@ const router = Router();
 router.use(authMiddleware, requireRoles([UserRole.ADMIN, UserRole.MANAGER]), resolveAdminId());
 
 // ─── Client CRUD ─────────────────────────────────────────────────
-router.post('/clients/logo/presign', requirePermission('clients', 'create'), validate(adminPresignPhotoSchema), ctrl.presignClientLogo);
+router.post('/clients/logo/upload', requirePermission('clients', 'create'), imageUpload.single('logo'), ctrl.uploadClientLogo);
 router.post('/clients', requirePermission('clients', 'create'), validate(createClientSchema), ctrl.createClient);
 router.get('/clients', requirePermission('clients', 'view'), ctrl.listClients);
 router.get('/clients/:clientId', requirePermission('clients', 'view'), ctrl.getClient);

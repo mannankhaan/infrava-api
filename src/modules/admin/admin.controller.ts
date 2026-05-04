@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import path from 'path';
 import ExcelJS from 'exceljs';
 import { Readable } from 'stream';
 import bcrypt from 'bcryptjs';
@@ -21,7 +22,7 @@ import {
   CreateManagerInput, UpdateManagerPermissionsInput,
   CreateTemplateInput, UpdateTemplateInput,
 } from './admin.schemas';
-import { getPresignedUploadUrl } from '../../shared/services/storage.service';
+import { getPresignedUploadUrl, uploadFile } from '../../shared/services/storage.service';
 import { validateFaultAgainstTemplate, separateFormData } from '../../shared/services/form-validator.service';
 import { resolveUniquePrefix, createProjectSequence, generateProjectRef } from '../../shared/services/project-sequence.service';
 import { createQuotationSequence, generateQuotationRef } from '../../shared/services/quotation-sequence.service';
@@ -1690,13 +1691,17 @@ export async function downloadQuotationPdf(req: AuthRequest, res: Response): Pro
 
 // ─── Client CRUD ───────────────────────────────────────────────────
 
-export async function presignClientLogo(req: AuthRequest, res: Response): Promise<void> {
-  const { contentType, fileName } = req.body as AdminPresignPhotoInput;
+export async function uploadClientLogo(req: AuthRequest, res: Response): Promise<void> {
+  const file = req.file;
+  if (!file) {
+    res.status(400).json({ success: false, error: 'No file uploaded' });
+    return;
+  }
+  const ext = path.extname(file.originalname).toLowerCase() || '.png';
   const uniqueId = `logo_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-  const cleanName = fileName ? fileName.replace(/[^a-zA-Z0-9.-]/g, '_') : 'logo';
-  const r2Key = `client-logos/${getAdminId(req)}/${uniqueId}-${cleanName}`;
-  const { url } = await getPresignedUploadUrl(r2Key, contentType);
-  res.json({ success: true, data: { uploadUrl: url, r2Key } });
+  const r2Key = `client-logos/${getAdminId(req)}/${uniqueId}${ext}`;
+  await uploadFile(r2Key, file.buffer);
+  res.json({ success: true, data: { r2Key } });
 }
 
 export async function createClient(req: AuthRequest, res: Response): Promise<void> {

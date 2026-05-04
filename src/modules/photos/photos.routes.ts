@@ -1,28 +1,25 @@
 import { Router } from 'express';
-import { prisma } from '../../config/prisma';
-import { getPresignedUploadUrl } from '../../shared/services/storage.service';
-import { env } from '../../config/env';
+import { getFile } from '../../shared/services/storage.service';
+import mime from 'mime-types';
 
 const router = Router();
 
-// Simple redirect or proxy for photos
-// The frontend currently expects /api/v1/photos/:key
-// Catch-all middleware for the photos router
+// Proxy files from R2 — serves photos, client logos, avatars, etc.
 router.use(async (req, res, next) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return next();
-  
+
   const key = req.path.startsWith('/') ? req.path.substring(1) : req.path;
-  
   if (!key) return next();
-  
-  // If we are in dev and key doesn't start with photos/, it might be a local path
-  // but the R2 keys usually start with photos/ or admin-faults/
-  
-  // Construct the R2 public URL
-  const publicUrl = `https://pub-${env.R2_ACCOUNT_ID}.r2.dev/${key}`;
-  
-  // Redirect to the public R2 URL
-  res.redirect(publicUrl);
+
+  try {
+    const buffer = await getFile(key);
+    const contentType = mime.lookup(key) || 'application/octet-stream';
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(buffer);
+  } catch {
+    res.status(404).json({ success: false, error: 'File not found' });
+  }
 });
 
 export default router;

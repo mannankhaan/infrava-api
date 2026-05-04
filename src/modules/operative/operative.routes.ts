@@ -1,10 +1,23 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { authMiddleware } from '../../shared/middleware/auth.middleware';
 import { requireRoles } from '../../shared/middleware/rbac.middleware';
 import { validate } from '../../shared/middleware/validate.middleware';
 import { UserRole } from '../../types';
-import { updateFaultSchema, updateWorkDaySchema, registerPhotoSchema, presignPhotoSchema, punchEventSchema, deletionRequestSchema } from './operative.schemas';
+import { updateFaultSchema, updateWorkDaySchema, punchEventSchema, deletionRequestSchema } from './operative.schemas';
 import * as ctrl from './operative.controller';
+
+const photoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'));
+    }
+  },
+});
 
 const router = Router();
 
@@ -26,8 +39,7 @@ router.patch('/faults/:id/work-days/:dayId', validate(updateWorkDaySchema), ctrl
 router.post('/faults/:id/work-days/:dayId/punch', validate(punchEventSchema), ctrl.recordPunchEvent);
 
 // Photos
-router.post('/faults/:id/photos/presign', validate(presignPhotoSchema), ctrl.presignPhoto);
-router.post('/faults/:id/photos', validate(registerPhotoSchema), ctrl.registerPhoto);
+router.post('/faults/:id/photos', photoUpload.single('photo'), ctrl.uploadPhoto);
 router.delete('/faults/:id/photos/:pid', ctrl.deletePhoto);
 
 // Data deletion

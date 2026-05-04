@@ -1,9 +1,9 @@
 import { Response } from 'express';
 import { prisma } from '../../config/prisma';
 import { AuthRequest, FaultStatus } from '../../types';
-import { getPresignedUploadUrl, deleteFile } from '../../shared/services/storage.service';
+import { uploadFile, deleteFile } from '../../shared/services/storage.service';
 import { sendFaultSubmittedEmail } from '../../shared/services/email.service';
-import { UpdateFaultInput, UpdateWorkDayInput, RegisterPhotoInput, PresignPhotoInput, PunchEventInput, DeletionRequestInput } from './operative.schemas';
+import { UpdateFaultInput, UpdateWorkDayInput, PunchEventInput, DeletionRequestInput } from './operative.schemas';
 
 export async function listClients(req: AuthRequest, res: Response): Promise<void> {
   const faults = await prisma.fault.findMany({
@@ -166,7 +166,7 @@ export async function submitFault(req: AuthRequest, res: Response): Promise<void
 
 // ─── Photo Management ───────────────────────────────────────────────
 
-export async function presignPhoto(req: AuthRequest, res: Response): Promise<void> {
+export async function uploadPhoto(req: AuthRequest, res: Response): Promise<void> {
   const fault = await prisma.fault.findFirst({
     where: { id: req.params.id as string, assignedOperativeId: req.user!.id },
   });
@@ -176,7 +176,17 @@ export async function presignPhoto(req: AuthRequest, res: Response): Promise<voi
     return;
   }
 
-  const { photoStage, fileName, contentType } = req.body as PresignPhotoInput;
+  const file = req.file;
+  if (!file) {
+    res.status(400).json({ success: false, error: 'No photo uploaded' });
+    return;
+  }
+
+  const photoStage = (req.body.photoStage || '').toLowerCase() as 'before' | 'during' | 'after';
+  if (!['before', 'during', 'after'].includes(photoStage)) {
+    res.status(400).json({ success: false, error: 'Invalid photo stage' });
+    return;
+  }
 
   const existingCount = await prisma.faultPhoto.count({
     where: { faultId: req.params.id as string, photoStage, deletedAt: null },
@@ -186,31 +196,18 @@ export async function presignPhoto(req: AuthRequest, res: Response): Promise<voi
     return;
   }
 
-  const r2Key = `photos/${fault.id}/${photoStage}/${Date.now()}-${fileName}`;
-  const { url } = await getPresignedUploadUrl(r2Key, contentType);
+  const r2Key = `photos/${fault.id}/${photoStage}/${Date.now()}-${file.originalname}`;
+  await uploadFile(r2Key, file.buffer);
 
-  res.json({ success: true, data: { uploadUrl: url, r2Key } });
-}
-
-export async function registerPhoto(req: AuthRequest, res: Response): Promise<void> {
-  const fault = await prisma.fault.findFirst({
-    where: { id: req.params.id as string, assignedOperativeId: req.user!.id },
-  });
-
-  if (!fault) {
-    res.status(404).json({ success: false, error: 'Project not found' });
-    return;
-  }
-
-  const input = req.body as RegisterPhotoInput;
+  const workDayId = req.body.workDayId || null;
   const photo = await prisma.faultPhoto.create({
     data: {
       faultId: req.params.id as string,
-      r2Key: input.r2Key,
-      photoStage: input.photoStage,
-      fileName: input.fileName,
-      fileSizeBytes: input.fileSizeBytes,
-      ...(input.workDayId && { workDayId: input.workDayId }),
+      r2Key,
+      photoStage,
+      fileName: file.originalname,
+      fileSizeBytes: file.size,
+      ...(workDayId && { workDayId }),
     },
   });
 

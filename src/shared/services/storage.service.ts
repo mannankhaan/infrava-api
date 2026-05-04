@@ -89,11 +89,8 @@ export async function deleteFiles(keys: string[]): Promise<void> {
 }
 
 export function getFileUrl(key: string): string {
-  if (s3Client) {
-    // Return Public URL if configured, or just the presigned GET / bucket endpoint logic
-    // For now, depending on public bucket configuration:
-    return `https://pub-${env.R2_ACCOUNT_ID}.r2.dev/${key}`; // Replace with actual public URL domain if known
-  }
-  return `http://localhost:4000/uploads/${key}`;
+  // Serve all files through the API proxy at /api/v1/photos/:key
+  const apiUrl = env.API_URL || 'http://localhost:4000';
+  return `${apiUrl}/api/v1/photos/${key}`;
 }
 
