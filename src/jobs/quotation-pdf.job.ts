@@ -198,23 +198,22 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
 
   const headerTop = 20;
 
-  // Left side: admin company logo or placeholder
-  if (companyLogoBuf) {
-    try { doc.image(companyLogoBuf, LM, headerTop, { fit: [110, 40] }); } catch { /* skip */ }
-  } else {
-    const initial = company.name.charAt(0).toUpperCase();
+  // Left side: client logo or client initial
+  if (clientLogoBuf) {
+    try { doc.image(clientLogoBuf, LM, headerTop, { fit: [110, 40] }); } catch { /* skip */ }
+  } else if (quotation.client) {
+    const initial = quotation.client.name.charAt(0).toUpperCase();
     doc.roundedRect(LM, headerTop, 40, 40, 6).fill(NAVY);
     doc.fontSize(20).font('Helvetica-Bold').fillColor(WHITE).text(initial, LM + 12, headerTop + 10);
   }
 
-  // Right side: client logo (if available)
-  if (clientLogoBuf) {
-    try { doc.image(clientLogoBuf, LM + PW - 110, headerTop, { fit: [110, 40] }); } catch { /* skip */ }
-  }
+  // Right side: admin company details
+  const rightW = PW * 0.58;
+  const rightX = LM + PW - rightW;
+  let rightY = headerTop;
 
-  // Company details below logos
-  const detailsY = headerTop + 48;
-  doc.fontSize(12).font('Helvetica-Bold').fillColor(NAVY).text(company.name, LM, detailsY, { width: PW });
+  doc.fontSize(13).font('Helvetica-Bold').fillColor(NAVY).text(company.name, rightX, rightY, { width: rightW, align: 'right' });
+  rightY += 18;
 
   const infoLines: string[] = [];
   if (company.address) infoLines.push(company.address);
@@ -224,15 +223,13 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
   if (contactBits.length) infoLines.push(contactBits.join('  |  '));
   if (company.website) infoLines.push(company.website);
   if (company.abn) infoLines.push(`Company Reg: ${company.abn}`);
-
-  let infoY = detailsY + 16;
   for (const line of infoLines) {
-    doc.fontSize(7.5).font('Helvetica').fillColor(MED).text(line, LM, infoY, { width: PW });
-    infoY += 10;
+    doc.fontSize(7.5).font('Helvetica').fillColor(MED).text(line, rightX, rightY, { width: rightW, align: 'right' });
+    rightY += 10;
   }
 
   // Title bar
-  const titleBarY = Math.max(detailsY + 50, infoY + 8);
+  const titleBarY = Math.max(headerTop + 50, rightY + 8);
   const titleLabel = quotation.revisionNumber > 0
     ? `QUOTATION  —  Revision ${quotation.revisionNumber}`
     : 'QUOTATION';
