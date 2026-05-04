@@ -385,10 +385,11 @@ export async function generateQuotationPdf(quotation: QuotationWithRelations): P
 
       for (const item of groupItems) {
         catSubtotal += item.amount;
+        const desc = item.deliveryIncluded ? `${item.description} (Delivery Incl.)` : item.description;
         tRow([
           { val: String(rowIdx + 1),           w: colDefs[0].w },
           { val: item.subCategory || '—',       w: colDefs[1].w },
-          { val: item.description,              w: colDefs[2].w },
+          { val: desc,                          w: colDefs[2].w },
           { val: String(item.quantity),         w: colDefs[3].w, align: 'right' },
           { val: item.unit,                     w: colDefs[4].w },
           { val: fmtCurrency(item.rate),        w: colDefs[5].w, align: 'right' },

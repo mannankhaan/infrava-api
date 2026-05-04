@@ -189,6 +189,7 @@ export const createRateCardSchema = z.object({
   nightRateShift: z.number().min(0).default(0),
   weekendRateShift: z.number().min(0).default(0),
   uplift: z.number().min(0).default(0),
+  deliveryIncluded: z.boolean().default(false),
 });
 
 export const updateRateCardSchema = z.object({
@@ -203,6 +204,7 @@ export const updateRateCardSchema = z.object({
   nightRateShift: z.number().min(0).optional(),
   weekendRateShift: z.number().min(0).optional(),
   uplift: z.number().min(0).optional(),
+  deliveryIncluded: z.boolean().optional(),
 });
 
 export type CreateRateCardInput = z.infer<typeof createRateCardSchema>;
@@ -228,6 +230,7 @@ const quotationItemSchema = z.object({
   rate: z.number().min(0, 'Rate must be non-negative'),
   uplift: z.number().min(0).default(0),
   rateCardId: z.string().uuid().nullable().optional(),
+  deliveryIncluded: z.boolean().optional(),
 });
 
 export const createQuotationSchema = z.object({

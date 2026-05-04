@@ -1133,13 +1133,15 @@ export async function importRateCards(req: AuthRequest, res: Response): Promise<
       nightRateShift: number;
       weekendRateShift: number;
       uplift: number;
+      deliveryIncluded: boolean;
     }> = [];
 
     // Build column index map
     const colMap: Record<string, number> = {};
     headers.forEach((h, i) => { colMap[h] = i; });
 
-    const isMaterial = category === 'Material';
+    const isMaterialLike = category === 'Material' || category === 'Plant';
+    const isPlant = category === 'Plant';
 
     worksheet.eachRow((row, rowNumber) => {
       if (rowNumber === 1) return; // skip header
@@ -1163,13 +1165,13 @@ export async function importRateCards(req: AuthRequest, res: Response): Promise<
         return 0;
       };
 
-      const isPlant = category === 'Plant';
-      const resourceName = getCellStr(isMaterial ? ['MATERIAL NAME'] : isPlant ? ['PLANT NAME', 'RESOURCE NAME'] : ['RESOURCE NAME']);
+      const resourceName = getCellStr(category === 'Material' ? ['MATERIAL NAME'] : isPlant ? ['PLANT NAME', 'RESOURCE NAME'] : ['RESOURCE NAME']);
       if (!resourceName) return; // skip empty rows
 
       const subCategory = getCellStr(['CATEGORY', 'SUB-CATEGORY']) || null;
 
-      if (isMaterial) {
+      if (isMaterialLike) {
+        const deliveryStr = isPlant ? getCellStr(['DELIVERY INCLUDED', 'DELIVERY']).toUpperCase() : '';
         rows.push({
           resourceName,
           subCategory,
@@ -1182,20 +1184,7 @@ export async function importRateCards(req: AuthRequest, res: Response): Promise<
           nightRateShift: 0,
           weekendRateShift: 0,
           uplift: getCellRate(['UPLIFT', 'UPLIFT %', 'UPLIFT%']),
-        });
-      } else if (isPlant) {
-        rows.push({
-          resourceName,
-          subCategory,
-          description: null,
-          unit: null,
-          dayRateHourly: getCellRate(['DAY RATE', 'DAY/HR']),
-          nightRateHourly: 0,
-          weekendRateHourly: 0,
-          dayRateShift: getCellRate(['WEEKLY RATE', 'DAY/SHIFT']),
-          nightRateShift: 0,
-          weekendRateShift: 0,
-          uplift: 0,
+          deliveryIncluded: deliveryStr === 'YES' || deliveryStr === 'TRUE' || deliveryStr === '1',
         });
       } else {
         rows.push({
@@ -1210,6 +1199,7 @@ export async function importRateCards(req: AuthRequest, res: Response): Promise<
           nightRateShift: getCellRate(['NIGHT/SHIFT']),
           weekendRateShift: getCellRate(['WKND/SHIFT']),
           uplift: 0,
+          deliveryIncluded: false,
         });
       }
     });
@@ -1261,8 +1251,8 @@ function getRateCardColumns(category: string): { columns: Partial<ExcelJS.Column
   if (category === 'Material') {
     return {
       columns: [
-        { header: 'MATERIAL NAME', key: 'resourceName', width: 35 },
         { header: 'CATEGORY', key: 'subCategory', width: 25 },
+        { header: 'MATERIAL NAME', key: 'resourceName', width: 35 },
         { header: 'DESCRIPTION', key: 'description', width: 40 },
         { header: 'UNIT', key: 'unit', width: 12 },
         { header: 'BASE RATE', key: 'dayRateHourly', width: 14 },
@@ -1275,19 +1265,23 @@ function getRateCardColumns(category: string): { columns: Partial<ExcelJS.Column
   if (category === 'Plant') {
     return {
       columns: [
-        { header: 'PLANT NAME', key: 'resourceName', width: 35 },
         { header: 'CATEGORY', key: 'subCategory', width: 25 },
-        { header: 'DAY RATE', key: 'dayRateHourly', width: 14 },
-        { header: 'WEEKLY RATE', key: 'dayRateShift', width: 14 },
+        { header: 'PLANT NAME', key: 'resourceName', width: 35 },
+        { header: 'DESCRIPTION', key: 'description', width: 40 },
+        { header: 'UNIT', key: 'unit', width: 12 },
+        { header: 'BASE RATE', key: 'dayRateHourly', width: 14 },
+        { header: 'UPLIFT %', key: 'uplift', width: 12 },
+        { header: 'EFFECTIVE RATE', key: 'effectiveRate', width: 16 },
+        { header: 'DELIVERY INCLUDED', key: 'deliveryIncluded', width: 18 },
       ],
-      rateCols: [3, 4],
+      rateCols: [5, 7],
     };
   }
   // Labour
   return {
     columns: [
-      { header: 'RESOURCE NAME', key: 'resourceName', width: 35 },
       { header: 'CATEGORY', key: 'subCategory', width: 25 },
+      { header: 'RESOURCE NAME', key: 'resourceName', width: 35 },
       { header: 'DAY/HR', key: 'dayRateHourly', width: 14 },
       { header: 'NIGHT/HR', key: 'nightRateHourly', width: 14 },
       { header: 'WKND/HR', key: 'weekendRateHourly', width: 14 },
@@ -1352,23 +1346,28 @@ export async function exportRateCards(req: AuthRequest, res: Response): Promise<
     const { columns: cols, rateCols } = getRateCardColumns(category);
     worksheet.columns = cols;
 
-    const isMaterial = category === 'Material';
+    const isMaterialLike = category === 'Material' || category === 'Plant';
     rateCards.forEach(rc => {
       const row: Record<string, unknown> = {
         resourceName: rc.resourceName,
         subCategory: rc.subCategory || '',
-        description: rc.description || '',
-        unit: rc.unit || '',
-        dayRateHourly: rc.dayRateHourly,
-        nightRateHourly: rc.nightRateHourly,
-        weekendRateHourly: rc.weekendRateHourly,
-        dayRateShift: rc.dayRateShift,
-        nightRateShift: rc.nightRateShift,
-        weekendRateShift: rc.weekendRateShift,
-        uplift: rc.uplift || 0,
       };
-      if (isMaterial) {
+      if (isMaterialLike) {
+        row.description = rc.description || '';
+        row.unit = rc.unit || '';
+        row.dayRateHourly = rc.dayRateHourly;
+        row.uplift = rc.uplift || 0;
         row.effectiveRate = Math.round(rc.dayRateHourly * (1 + (rc.uplift || 0) / 100) * 100) / 100;
+        if (category === 'Plant') {
+          row.deliveryIncluded = rc.deliveryIncluded ? 'Yes' : 'No';
+        }
+      } else {
+        row.dayRateHourly = rc.dayRateHourly;
+        row.nightRateHourly = rc.nightRateHourly;
+        row.weekendRateHourly = rc.weekendRateHourly;
+        row.dayRateShift = rc.dayRateShift;
+        row.nightRateShift = rc.nightRateShift;
+        row.weekendRateShift = rc.weekendRateShift;
       }
       worksheet.addRow(row);
     });
@@ -1448,6 +1447,7 @@ export async function createQuotation(req: AuthRequest, res: Response): Promise<
           uplift: item.uplift || 0,
           amount: computeAmount(item.quantity, item.rate, item.uplift || 0),
           rateCardId: item.rateCardId || null,
+          deliveryIncluded: item.deliveryIncluded || false,
         })),
       },
     },
@@ -1544,6 +1544,7 @@ export async function updateQuotation(req: AuthRequest, res: Response): Promise<
           uplift: item.uplift || 0,
           amount: computeAmount(item.quantity, item.rate, item.uplift || 0),
           rateCardId: item.rateCardId || null,
+          deliveryIncluded: item.deliveryIncluded || false,
         })),
       });
     }

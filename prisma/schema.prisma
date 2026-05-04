@@ -477,6 +477,7 @@ model RateCard {
   nightRateShift    Float    @default(0) @map("night_rate_shift") @db.DoublePrecision
   weekendRateShift  Float    @default(0) @map("weekend_rate_shift") @db.DoublePrecision
   uplift            Float    @default(0) @db.DoublePrecision
+  deliveryIncluded  Boolean  @default(false) @map("delivery_included")
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz()
   updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz()
 
@@ -529,7 +530,8 @@ model QuotationItem {
   rate        Float   @db.DoublePrecision
   uplift      Float   @default(0) @db.DoublePrecision // percentage, e.g. 5 means 5%
   amount      Float   @db.DoublePrecision // qty * rate * (1 + uplift/100)
-  rateCardId  String? @map("rate_card_id") @db.Uuid
+  rateCardId         String?  @map("rate_card_id") @db.Uuid
+  deliveryIncluded   Boolean  @default(false) @map("delivery_included")
 
   quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
 
