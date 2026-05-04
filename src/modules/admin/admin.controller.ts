@@ -10,7 +10,6 @@ import { sendWelcomeAndTaskEmail, sendTaskNotificationEmail, sendFaultRejectedEm
 import { parseFaultDocx } from '../../shared/services/docx-parser.service';
 import { generateFaultPdf } from '../../jobs/report.job';
 import { generateQuotationPdf } from '../../jobs/quotation-pdf.job';
-import { getFile } from '../../shared/services/storage.service';
 import {
   AssignOperativeInput, ReassignInput, RejectInput,
   CreateOperativeInput, UpdateOperativeInput,
@@ -531,8 +530,10 @@ export async function finalSubmit(req: AuthRequest, res: Response): Promise<void
     include: {
       admin: { select: { id: true, name: true, email: true, avatarUrl: true, companyName: true, companyAddress: true, companyWebsite: true, companyPhone: true, companyEmail: true, companyAbn: true, logoUrl: true } },
       assignedOperative: { select: { name: true } },
+      client: { select: { name: true, address: true, opsContactName: true, opsContactEmail: true, opsContactPhone: true } },
       photos: { where: { deletedAt: null } },
       workDays: { include: { events: true, photos: { where: { deletedAt: null } } }, orderBy: { dayNumber: 'asc' } },
+      formTemplate: { select: { schema: true } },
     },
   });
 
@@ -559,22 +560,6 @@ export async function finalSubmit(req: AuthRequest, res: Response): Promise<void
     },
   });
 
-  // Auto-generate report
-  try {
-    const r2Key = await generateFaultPdf(fault);
-    await prisma.eodReport.create({
-      data: {
-        faultId: fault.id,
-        adminId: fault.adminId,
-        pdfR2Key: r2Key,
-        sentAt: new Date(),
-      },
-    });
-  } catch (err) {
-    // Log but don't fail the submission
-    console.error('Report generation failed:', err);
-  }
-
   // Send completion email to admin
   sendFaultCompletedEmail({
     to: fault.admin.email,
@@ -587,27 +572,36 @@ export async function finalSubmit(req: AuthRequest, res: Response): Promise<void
 }
 
 export async function downloadReport(req: AuthRequest, res: Response): Promise<void> {
-  const report = await prisma.eodReport.findFirst({
+  const fault = await prisma.fault.findFirst({
     where: {
       id: req.params.id as string,
       adminId: getAdminId(req),
+      status: FaultStatus.COMPLETED,
     },
-    include: { fault: { select: { projectRef: true } } },
+    include: {
+      admin: { select: { id: true, name: true, email: true, avatarUrl: true, companyName: true, companyAddress: true, companyWebsite: true, companyPhone: true, companyEmail: true, companyAbn: true, logoUrl: true } },
+      assignedOperative: { select: { name: true } },
+      client: { select: { name: true, address: true, opsContactName: true, opsContactEmail: true, opsContactPhone: true } },
+      photos: { where: { deletedAt: null }, orderBy: { uploadedAt: 'asc' } },
+      workDays: { include: { events: { orderBy: { timestamp: 'asc' } }, photos: { where: { deletedAt: null } } }, orderBy: { dayNumber: 'asc' } },
+      formTemplate: { select: { schema: true } },
+    },
   });
 
-  if (!report || !report.pdfR2Key) {
-    res.status(404).json({ success: false, error: 'Report not found' });
+  if (!fault) {
+    res.status(404).json({ success: false, error: 'Completed project not found' });
     return;
   }
 
   try {
-    const buffer = await getFile(report.pdfR2Key);
-    const filename = `Infrava-Report-${report.fault?.projectRef || 'report'}.pdf`;
+    const buffer = await generateFaultPdf(fault as Parameters<typeof generateFaultPdf>[0]);
+    const filename = `Infrava-Report-${fault.projectRef}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buffer);
-  } catch {
-    res.status(404).json({ success: false, error: 'Report file not found' });
+  } catch (err) {
+    console.error('Report generation failed:', err);
+    res.status(500).json({ success: false, error: 'Failed to generate report' });
   }
 }
 
@@ -842,16 +836,29 @@ export async function getAnalytics(req: AuthRequest, res: Response): Promise<voi
 
 export async function listReports(req: AuthRequest, res: Response): Promise<void> {
   const clientId = req.query.clientId as string | undefined;
-  const reports = await prisma.eodReport.findMany({
+  const faults = await prisma.fault.findMany({
     where: {
       adminId: getAdminId(req),
-      ...(clientId && { fault: { clientId } }),
+      status: FaultStatus.COMPLETED,
+      ...(clientId && { clientId }),
     },
-    include: {
-      fault: { select: { projectRef: true, title: true, status: true } },
+    select: {
+      id: true,
+      projectRef: true,
+      title: true,
+      status: true,
+      completedAt: true,
     },
-    orderBy: { createdAt: 'desc' },
+    orderBy: { completedAt: 'desc' },
   });
+
+  // Map to a shape the frontend expects
+  const reports = faults.map(f => ({
+    id: f.id,
+    faultId: f.id,
+    createdAt: f.completedAt?.toISOString() || '',
+    fault: { projectRef: f.projectRef, title: f.title, status: f.status },
+  }));
 
   res.json({ success: true, data: reports });
 }
@@ -1260,8 +1267,9 @@ function getRateCardColumns(category: string): { columns: Partial<ExcelJS.Column
         { header: 'UNIT', key: 'unit', width: 12 },
         { header: 'BASE RATE', key: 'dayRateHourly', width: 14 },
         { header: 'UPLIFT %', key: 'uplift', width: 12 },
+        { header: 'EFFECTIVE RATE', key: 'effectiveRate', width: 16 },
       ],
-      rateCols: [5],
+      rateCols: [5, 7],
     };
   }
   if (category === 'Plant') {
@@ -1344,8 +1352,9 @@ export async function exportRateCards(req: AuthRequest, res: Response): Promise<
     const { columns: cols, rateCols } = getRateCardColumns(category);
     worksheet.columns = cols;
 
+    const isMaterial = category === 'Material';
     rateCards.forEach(rc => {
-      worksheet.addRow({
+      const row: Record<string, unknown> = {
         resourceName: rc.resourceName,
         subCategory: rc.subCategory || '',
         description: rc.description || '',
@@ -1357,7 +1366,11 @@ export async function exportRateCards(req: AuthRequest, res: Response): Promise<
         nightRateShift: rc.nightRateShift,
         weekendRateShift: rc.weekendRateShift,
         uplift: rc.uplift || 0,
-      });
+      };
+      if (isMaterial) {
+        row.effectiveRate = Math.round(rc.dayRateHourly * (1 + (rc.uplift || 0) / 100) * 100) / 100;
+      }
+      worksheet.addRow(row);
     });
 
     // Style header

@@ -64,6 +64,7 @@ export const createTemplateSchema = z.object({
   name: z.string().min(1, 'Template name is required'),
   schema: z.object({
     sections: z.array(formSectionSchema).min(1),
+    operativeSections: z.array(z.string()).optional(),
   }),
 });
 
@@ -71,6 +72,7 @@ export const updateTemplateSchema = z.object({
   name: z.string().min(1).optional(),
   schema: z.object({
     sections: z.array(formSectionSchema).min(1),
+    operativeSections: z.array(z.string()).optional(),
   }).optional(),
 });
 

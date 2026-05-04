@@ -5,9 +5,46 @@ import { getPresignedUploadUrl, deleteFile } from '../../shared/services/storage
 import { sendFaultSubmittedEmail } from '../../shared/services/email.service';
 import { UpdateFaultInput, UpdateWorkDayInput, RegisterPhotoInput, PresignPhotoInput, PunchEventInput, DeletionRequestInput } from './operative.schemas';
 
-export async function listFaults(req: AuthRequest, res: Response): Promise<void> {
+export async function listClients(req: AuthRequest, res: Response): Promise<void> {
   const faults = await prisma.fault.findMany({
-    where: { assignedOperativeId: req.user!.id },
+    where: { assignedOperativeId: req.user!.id, clientId: { not: null } },
+    select: {
+      clientId: true,
+      status: true,
+      client: { select: { id: true, name: true, logoR2Key: true } },
+    },
+  });
+
+  const actionable: string[] = [FaultStatus.ASSIGNED_TO_OPERATIVE, FaultStatus.REJECTED, FaultStatus.REASSIGNED];
+  const clientMap = new Map<string, { id: string; name: string; logoR2Key: string | null; activeFaults: number; totalFaults: number }>();
+
+  for (const f of faults) {
+    if (!f.clientId || !f.client) continue;
+    const existing = clientMap.get(f.clientId);
+    if (existing) {
+      existing.totalFaults++;
+      if (actionable.includes(f.status)) existing.activeFaults++;
+    } else {
+      clientMap.set(f.clientId, {
+        id: f.client.id,
+        name: f.client.name,
+        logoR2Key: f.client.logoR2Key,
+        totalFaults: 1,
+        activeFaults: actionable.includes(f.status) ? 1 : 0,
+      });
+    }
+  }
+
+  res.json({ success: true, data: Array.from(clientMap.values()) });
+}
+
+export async function listFaults(req: AuthRequest, res: Response): Promise<void> {
+  const clientId = req.query.clientId as string | undefined;
+  const faults = await prisma.fault.findMany({
+    where: {
+      assignedOperativeId: req.user!.id,
+      ...(clientId && { clientId }),
+    },
     include: {
       creator: { select: { name: true } },
       admin: { select: { name: true, email: true } },
@@ -241,9 +278,21 @@ export async function addWorkDay(req: AuthRequest, res: Response): Promise<void>
   });
 
   // Ensure previous day is locked before starting a new one
+  // Exception: when GPS tracking is disabled, days are auto-locked on save
   if (lastDay && !lastDay.isLocked) {
-    res.status(400).json({ success: false, error: 'Previous work day must be completed (punched out) before starting a new one' });
-    return;
+    let gpsDisabled = false;
+    if (fault.formTemplateId) {
+      const template = await prisma.formTemplate.findFirst({
+        where: { id: fault.formTemplateId },
+        select: { schema: true },
+      });
+      const opSections = (template?.schema as Record<string, unknown>)?.operativeSections as string[] | undefined;
+      if (opSections && !opSections.includes('gpsTracking')) gpsDisabled = true;
+    }
+    if (!gpsDisabled) {
+      res.status(400).json({ success: false, error: 'Previous work day must be completed (punched out) before starting a new one' });
+      return;
+    }
   }
 
   const dayNumber = (lastDay?.dayNumber || 0) + 1;
@@ -356,6 +405,19 @@ export async function updateWorkDay(req: AuthRequest, res: Response): Promise<vo
     return;
   }
 
+  // Check if GPS tracking is disabled — if so, auto-lock the day on save
+  let autoLock = false;
+  if (!workDay.isLocked) {
+    const template = await prisma.formTemplate.findFirst({
+      where: { id: fault.formTemplateId ?? undefined },
+      select: { schema: true },
+    });
+    const opSections = (template?.schema as Record<string, unknown>)?.operativeSections as string[] | undefined;
+    if (opSections && !opSections.includes('gpsTracking')) {
+      autoLock = true;
+    }
+  }
+
   const input = req.body as UpdateWorkDayInput;
   const updated = await prisma.workDay.update({
     where: { id: workDayId },
@@ -370,6 +432,7 @@ export async function updateWorkDay(req: AuthRequest, res: Response): Promise<vo
       ...(input.tempWorks !== undefined && { tempWorks: input.tempWorks as any }),
       ...(input.furtherWork !== undefined && { furtherWork: input.furtherWork }),
       ...(input.furtherWorkNotes !== undefined && { furtherWorkNotes: input.furtherWorkNotes }),
+      ...(autoLock && { isLocked: true }),
     },
     include: {
       events: { orderBy: { timestamp: 'asc' } },

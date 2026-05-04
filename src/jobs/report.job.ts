@@ -1,43 +1,51 @@
 import PDFDocument from 'pdfkit';
 import path from 'path';
 import fs from 'fs';
-import { Fault, FaultPhoto, User, WorkDay, PunchEvent } from '@prisma/client';
-import { uploadFile, getFile } from '../shared/services/storage.service';
+import { Fault, FaultPhoto, User, Client, WorkDay, PunchEvent } from '@prisma/client';
+import { getFile } from '../shared/services/storage.service';
+
+const INFRAVA_LOGO = path.join(process.cwd(), 'assets', 'logo.png');
 
 type WorkDayWithRelations = WorkDay & { events: PunchEvent[]; photos: FaultPhoto[] };
 
 type FaultWithRelations = Fault & {
   admin: Pick<User, 'id' | 'name' | 'email' | 'avatarUrl' | 'companyName' | 'companyAddress' | 'companyWebsite' | 'companyPhone' | 'companyEmail' | 'companyAbn' | 'logoUrl'>;
   assignedOperative: Pick<User, 'name'> | null;
+  client: Pick<Client, 'name' | 'address' | 'opsContactName' | 'opsContactEmail' | 'opsContactPhone'> | null;
   photos: FaultPhoto[];
   workDays: WorkDayWithRelations[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  formTemplate?: { schema: any } | null;
 };
 
-// ── Colours ──
+// ── Colours (matching quotation design system) ──
 const NAVY     = '#1C2B41';
-const BLUE     = '#0C66E4';
+const ACCENT   = '#0C66E4';
 const DARK     = '#1A1A1A';
 const MED      = '#4A4A4A';
 const LIGHT    = '#888888';
-const RULE     = '#CCCCCC';
-const BG_LIGHT = '#F5F7FA';
-const BG_ALT   = '#F0F4FF';
+const RULE     = '#D0D5DD';
+const BG_ALT   = '#F8FAFC';
+const BG_TOTAL = '#F0F4FF';
 const GREEN    = '#16A34A';
 const RED      = '#DC2626';
 const WHITE    = '#FFFFFF';
 
-const FALLBACK_LOGO = path.join(process.cwd(), 'assets', 'logo.png');
-
 // ── Formatting helpers ──
 
 function fmtDate(d: Date | string | null | undefined): string {
+  if (!d) return '—';
+  return (typeof d === 'string' ? new Date(d) : d).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+function fmtDateShort(d: Date | string | null | undefined): string {
   if (!d) return '—';
   return (typeof d === 'string' ? new Date(d) : d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function fmtDateTime(d: Date | string | null | undefined): string {
   if (!d) return '—';
-  return (typeof d === 'string' ? new Date(d) : d).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return (typeof d === 'string' ? new Date(d) : d).toLocaleString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function fmtTime(d: Date | string): string {
@@ -63,31 +71,35 @@ function elapsed(t1: Date | string, t2: Date | string): string {
 async function loadImage(url: string | null | undefined): Promise<Buffer | null> {
   if (!url) return null;
   try {
-    // Try R2 key extraction
     const m = url.match(/(?:uploads|logos|avatars)\/(.+)$/);
     if (m) return await getFile(m[0]);
-    // Try raw key
     return await getFile(url);
   } catch { /* skip */ }
   return null;
 }
 
-export async function generateFaultPdf(fault: FaultWithRelations): Promise<string> {
+async function loadR2Photo(r2Key: string): Promise<Buffer | null> {
+  try { return await getFile(r2Key); }
+  catch { return null; }
+}
+
+export async function generateFaultPdf(fault: FaultWithRelations): Promise<Buffer> {
   const LM = 50;
   const RM = 50;
   const doc = new PDFDocument({
     size: 'A4',
-    margins: { top: 50, bottom: 80, left: LM, right: RM },
+    margins: { top: 50, bottom: 0, left: LM, right: RM },
     bufferPages: true,
     info: {
-      Title: `Site Report — ${fault.projectRef}`,
+      Title: `Site Visit Report — ${fault.projectRef}`,
       Author: fault.admin.companyName || 'Infrava',
+      Subject: `Site report for ${fault.client?.name || 'Client'}`,
     },
   });
 
   const chunks: Buffer[] = [];
   doc.on('data', (c: Buffer) => chunks.push(c));
-  const PW = doc.page.width - LM - RM; // printable width
+  const PW = doc.page.width - LM - RM;
 
   const company = {
     name:    fault.admin.companyName || 'Infrava',
@@ -98,49 +110,51 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
     abn:     fault.admin.companyAbn || '',
   };
 
-  // Load Infrava logo (always fixed)
+  // Load Infrava logo (always fixed, left side)
   let infravaLogoBuf: Buffer | null = null;
   try {
-    if (fs.existsSync(FALLBACK_LOGO)) {
-      infravaLogoBuf = fs.readFileSync(FALLBACK_LOGO);
+    if (fs.existsSync(INFRAVA_LOGO)) {
+      infravaLogoBuf = fs.readFileSync(INFRAVA_LOGO);
     }
   } catch { /* skip */ }
 
-  // Load admin's company logo (optional)
+  // Load admin's company logo (right side)
   let companyLogoBuf: Buffer | null = null;
   if (fault.admin.logoUrl) {
     companyLogoBuf = await loadImage(fault.admin.logoUrl);
   }
 
-  // ── Layout helpers ──
+  // ── Layout helpers (matching quotation design) ──
+
+  const pageBottom = doc.page.height - 70;
 
   function ensureSpace(h: number) {
-    if (doc.y + h > doc.page.height - 90) { doc.addPage(); doc.y = 50; }
+    if (doc.y + h > pageBottom) { doc.addPage(); doc.y = 50; }
   }
 
   function sectionBar(title: string) {
-    ensureSpace(34);
-    if (doc.y > 60) doc.moveDown(0.6);
+    ensureSpace(36);
+    if (doc.y > 60) doc.y += 10;
     const y = doc.y;
-    doc.rect(LM, y, PW, 26).fill(NAVY);
-    doc.fontSize(11).font('Helvetica-Bold').fillColor(WHITE).text(title.toUpperCase(), LM + 12, y + 7, { width: PW - 24 });
-    doc.y = y + 30;
+    doc.rect(LM, y, PW, 28).fill(NAVY);
+    doc.fontSize(10).font('Helvetica-Bold').fillColor(WHITE).text(title.toUpperCase(), LM + 14, y + 8, { width: PW - 28, characterSpacing: 0.8 });
+    doc.y = y + 34;
   }
 
   function subHead(title: string) {
-    ensureSpace(24);
-    doc.moveDown(0.3);
+    ensureSpace(26);
+    doc.y += 6;
     const y = doc.y;
-    doc.rect(LM, y, 3, 16).fill(BLUE);
-    doc.fontSize(10).font('Helvetica-Bold').fillColor(NAVY).text(title, LM + 10, y + 2);
+    doc.rect(LM, y, 3, 16).fill(ACCENT);
+    doc.fontSize(9.5).font('Helvetica-Bold').fillColor(NAVY).text(title, LM + 12, y + 2);
     doc.y = y + 22;
   }
 
   function kv(label: string, value: string) {
     ensureSpace(18);
     const y = doc.y;
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(MED).text(label, LM + 6, y, { width: 130 });
-    doc.fontSize(9).font('Helvetica').fillColor(DARK).text(value || '—', LM + 140, y, { width: PW - 146 });
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(LIGHT).text(label, LM + 8, y, { width: 90 });
+    doc.fontSize(8.5).font('Helvetica').fillColor(DARK).text(value || '—', LM + 100, y, { width: PW - 108 });
     doc.y = Math.max(doc.y, y + 15);
   }
 
@@ -148,148 +162,215 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
     ensureSpace(18);
     const y = doc.y;
     const half = PW / 2;
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(MED).text(l1, LM + 6, y, { width: 100 });
-    doc.fontSize(9).font('Helvetica').fillColor(DARK).text(v1 || '—', LM + 108, y, { width: half - 114 });
-    doc.fontSize(9).font('Helvetica-Bold').fillColor(MED).text(l2, LM + half + 6, y, { width: 100 });
-    doc.fontSize(9).font('Helvetica').fillColor(DARK).text(v2 || '—', LM + half + 108, y, { width: half - 114 });
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(LIGHT).text(l1, LM + 8, y, { width: 90 });
+    doc.fontSize(8.5).font('Helvetica').fillColor(DARK).text(v1 || '—', LM + 100, y, { width: half - 108 });
+    doc.fontSize(8.5).font('Helvetica-Bold').fillColor(LIGHT).text(l2, LM + half + 8, y, { width: 90 });
+    doc.fontSize(8.5).font('Helvetica').fillColor(DARK).text(v2 || '—', LM + half + 100, y, { width: half - 108 });
     doc.y = y + 16;
   }
 
   function para(text: string) {
-    ensureSpace(18);
-    doc.fontSize(9).font('Helvetica').fillColor(DARK).text(text, LM + 6, doc.y, { width: PW - 12, lineGap: 2.5 });
+    ensureSpace(16);
+    doc.fontSize(9).font('Helvetica').fillColor(MED).text(text, LM + 8, doc.y, { width: PW - 16, lineGap: 3 });
+    doc.y += 4;
   }
 
-  function tHead(cols: { label: string; w: number }[]) {
-    ensureSpace(22);
+  function tHead(cols: { label: string; w: number; align?: string }[]) {
+    ensureSpace(24);
     const y = doc.y;
-    doc.rect(LM, y, PW, 20).fill(NAVY);
+    doc.rect(LM, y, PW, 22).fill(NAVY);
     let x = LM;
     for (const c of cols) {
-      doc.fontSize(8).font('Helvetica-Bold').fillColor(WHITE).text(c.label, x + 6, y + 5, { width: c.w - 12 });
+      doc.fontSize(7.5).font('Helvetica-Bold').fillColor(WHITE).text(c.label.toUpperCase(), x + 6, y + 6, { width: c.w - 12, align: (c.align as 'left' | 'right') || 'left', characterSpacing: 0.3 });
       x += c.w;
     }
-    doc.y = y + 20;
+    doc.y = y + 22;
   }
 
-  function tRow(cols: { val: string; w: number }[], alt: boolean) {
-    ensureSpace(18);
+  function tRow(cols: { val: string; w: number; align?: string; bold?: boolean }[], alt: boolean) {
+    let maxTextH = 0;
+    for (const c of cols) {
+      const h = doc.fontSize(8).font(c.bold ? 'Helvetica-Bold' : 'Helvetica').heightOfString(c.val, { width: c.w - 12 });
+      if (h > maxTextH) maxTextH = h;
+    }
+    const rowH = Math.max(20, maxTextH + 10);
+    ensureSpace(rowH);
     const y = doc.y;
-    if (alt) doc.rect(LM, y, PW, 18).fill(BG_ALT);
-    doc.moveTo(LM, y + 18).lineTo(LM + PW, y + 18).lineWidth(0.3).strokeColor(RULE).stroke();
+    if (alt) doc.rect(LM, y, PW, rowH).fill(BG_ALT);
+    doc.moveTo(LM, y + rowH).lineTo(LM + PW, y + rowH).lineWidth(0.3).strokeColor(RULE).stroke();
     let x = LM;
     for (const c of cols) {
-      doc.fontSize(8).font('Helvetica').fillColor(DARK).text(c.val, x + 6, y + 4, { width: c.w - 12 });
+      doc.fontSize(8).font(c.bold ? 'Helvetica-Bold' : 'Helvetica').fillColor(DARK).text(c.val, x + 6, y + 5, { width: c.w - 12, align: (c.align as 'left' | 'right') || 'left' });
       x += c.w;
     }
-    doc.y = y + 18;
+    doc.y = y + rowH;
   }
 
   function divider() {
-    doc.moveDown(0.3);
+    ensureSpace(12);
+    doc.y += 4;
     doc.moveTo(LM, doc.y).lineTo(LM + PW, doc.y).lineWidth(0.5).strokeColor(RULE).stroke();
-    doc.moveDown(0.3);
+    doc.y += 6;
   }
 
   // ════════════════════════════════════════════════════════════
-  // PAGE HEADER — Infrava logo (left) + Company branding (right)
+  // COVER HEADER
   // ════════════════════════════════════════════════════════════
 
-  // Top accent bar
   doc.rect(0, 0, doc.page.width, 5).fill(NAVY);
 
   const headerTop = 20;
 
-  // Infrava logo — always fixed, left side
+  // Left: Infrava logo (always fixed)
   if (infravaLogoBuf) {
     try { doc.image(infravaLogoBuf, LM, headerTop, { height: 36 }); } catch { /* skip */ }
   } else {
-    // Text fallback
     doc.roundedRect(LM, headerTop, 36, 36, 4).fill(NAVY);
     doc.fontSize(18).font('Helvetica-Bold').fillColor(WHITE).text('I', LM + 11, headerTop + 8);
   }
 
-  // Company logo + details — right side
+  // Right: admin company logo + details
   const rightW = PW * 0.55;
   const rightX = LM + PW - rightW;
   let rightY = headerTop;
 
+  const logoSize = 36;
+  const logoGap = 10;
+  const logoX = LM + PW - logoSize;
+  let logoRendered = false;
   if (companyLogoBuf) {
     try {
-      // Place company logo right-aligned
-      doc.image(companyLogoBuf, LM + PW - 60, headerTop, { height: 36 });
-      // Company name to the left of logo
-      doc.fontSize(12).font('Helvetica-Bold').fillColor(NAVY).text(company.name, rightX, rightY, { width: rightW - 68, align: 'right' });
-      rightY += 16;
-    } catch {
-      doc.fontSize(12).font('Helvetica-Bold').fillColor(NAVY).text(company.name, rightX, rightY, { width: rightW, align: 'right' });
-      rightY += 16;
-    }
-  } else {
-    doc.fontSize(12).font('Helvetica-Bold').fillColor(NAVY).text(company.name, rightX, rightY, { width: rightW, align: 'right' });
-    rightY += 16;
+      doc.image(companyLogoBuf, logoX, headerTop, { height: logoSize });
+      logoRendered = true;
+    } catch { /* fall through to placeholder */ }
+  }
+  if (!logoRendered) {
+    const initial = company.name.charAt(0).toUpperCase();
+    doc.roundedRect(logoX, headerTop, logoSize, logoSize, 4).fill(ACCENT);
+    doc.fontSize(18).font('Helvetica-Bold').fillColor(WHITE).text(initial, logoX + 10, headerTop + 8);
   }
 
-  // Company contact lines
-  const infoLines: string[] = [];
-  if (company.address) infoLines.push(company.address);
-  const contactBits: string[] = [];
-  if (company.phone) contactBits.push(company.phone);
-  if (company.email) contactBits.push(company.email);
-  if (contactBits.length) infoLines.push(contactBits.join('  |  '));
-  if (company.website) infoLines.push(company.website);
-  if (company.abn) infoLines.push(`ABN: ${company.abn}`);
-  for (const line of infoLines) {
-    doc.fontSize(7).font('Helvetica').fillColor(MED).text(line, rightX, rightY, { width: rightW, align: 'right' });
-    rightY += 9;
-  }
+  const textRightW = rightW - logoSize - logoGap;
+  doc.fontSize(13).font('Helvetica-Bold').fillColor(NAVY).text(company.name, rightX, headerTop + 10, { width: textRightW, align: 'right' });
 
-  // Title bar below header
-  const titleBarY = Math.max(headerTop + 44, rightY + 6);
-  doc.rect(LM, titleBarY, PW, 28).fill(NAVY);
-  doc.fontSize(13).font('Helvetica-Bold').fillColor(WHITE).text('SITE VISIT REPORT', LM + 14, titleBarY + 7, { width: PW * 0.6 });
+  // Title bar
+  const titleBarY = headerTop + 50;
+  doc.rect(LM, titleBarY, PW, 30).fill(NAVY);
+  doc.fontSize(14).font('Helvetica-Bold').fillColor(WHITE).text('SITE VISIT REPORT', LM + 16, titleBarY + 8, { width: PW * 0.5, characterSpacing: 0.5 });
   doc.fontSize(9).font('Helvetica').fillColor('#A0B4CF').text(
     `${fault.projectRef}  |  ${fmtDate(fault.faultDate)}`,
-    LM + 14, titleBarY + 8, { width: PW - 28, align: 'right' }
+    LM + 16, titleBarY + 11, { width: PW - 32, align: 'right' }
   );
 
-  doc.y = titleBarY + 36;
+  doc.y = titleBarY + 38;
 
   // ════════════════════════════════════════════════════════════
-  // JOB / PROPERTY DETAILS
+  // CLIENT / PREPARED BY — side-by-side cards
+  // ════════════════════════════════════════════════════════════
+
+  {
+    // Build company detail lines for the PREPARED BY card
+    const companyLines: string[] = [];
+    if (company.address) companyLines.push(company.address);
+    if (company.phone || company.email) {
+      const bits: string[] = [];
+      if (company.phone) bits.push(company.phone);
+      if (company.email) bits.push(company.email);
+      companyLines.push(bits.join('  |  '));
+    }
+    if (company.website) companyLines.push(company.website);
+    if (company.abn) companyLines.push(`Company Reg: ${company.abn}`);
+
+    const half = (PW - 12) / 2;
+    // Card height: header(20) + name(16) + detail lines(10 each) + padding
+    const cardContentH = 16 + companyLines.length * 11 + 6;
+    const clientContentH = 16 + (fault.client?.address ? 11 : 0) + 6;
+    const cardH = Math.max(cardContentH, clientContentH) + 20; // +20 for header
+
+    ensureSpace(cardH + 10);
+    const cardY = doc.y;
+
+    if (fault.client) {
+      // Client card (left)
+      doc.rect(LM, cardY, half, cardH).lineWidth(0.5).strokeColor(RULE).stroke();
+      doc.rect(LM, cardY, half, 20).fill(BG_ALT);
+      doc.fontSize(7.5).font('Helvetica-Bold').fillColor(LIGHT).text('CLIENT', LM + 10, cardY + 6, { characterSpacing: 0.5 });
+      doc.fontSize(10).font('Helvetica-Bold').fillColor(NAVY).text(fault.client.name, LM + 10, cardY + 26, { width: half - 20 });
+      if (fault.client.address) {
+        doc.fontSize(8).font('Helvetica').fillColor(MED).text(fault.client.address, LM + 10, cardY + 40, { width: half - 20 });
+      }
+    }
+
+    // Prepared By card (right)
+    const rightCardX = fault.client ? LM + half + 12 : LM;
+    const rightCardW = fault.client ? half : PW;
+    doc.rect(rightCardX, cardY, rightCardW, cardH).lineWidth(0.5).strokeColor(RULE).stroke();
+    doc.rect(rightCardX, cardY, rightCardW, 20).fill(BG_ALT);
+    doc.fontSize(7.5).font('Helvetica-Bold').fillColor(LIGHT).text('PREPARED BY', rightCardX + 10, cardY + 6, { characterSpacing: 0.5 });
+    doc.fontSize(10).font('Helvetica-Bold').fillColor(NAVY).text(company.name, rightCardX + 10, cardY + 26, { width: rightCardW - 20 });
+    let detailY = cardY + 40;
+    for (const line of companyLines) {
+      doc.fontSize(8).font('Helvetica').fillColor(MED).text(line, rightCardX + 10, detailY, { width: rightCardW - 20 });
+      detailY += 11;
+    }
+
+    doc.y = cardY + cardH + 8;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // TEMPLATE-AWARE FIELD CHECKS
+  // ════════════════════════════════════════════════════════════
+
+  const templateSections = (fault.formTemplate?.schema as Record<string, unknown>)?.sections as
+    { title: string; fields: { key: string; label: string; source: string }[] }[] | undefined;
+  const templateFields = new Set<string>();
+  if (templateSections) {
+    for (const sec of templateSections) {
+      for (const f of sec.fields) templateFields.add(f.key);
+    }
+  }
+  const hasField = (key: string) => templateFields.size === 0 || templateFields.has(key);
+
+  // ════════════════════════════════════════════════════════════
+  // JOB DETAILS
   // ════════════════════════════════════════════════════════════
 
   sectionBar('Job Details');
-  kvTwo('Project Ref', fault.projectRef, 'Client Ref', fault.clientRef || '—');
-  kvTwo('Fault Date', fmtDate(fault.faultDate), 'Priority', fault.priority || '—');
-  kvTwo('Work Type', fault.workType || '—', 'Status', fault.status.replace(/_/g, ' '));
+  kvTwo('Project Ref', fault.projectRef, 'Client Ref', hasField('clientRef') ? (fault.clientRef || '—') : '—');
+  kvTwo('Date', fmtDate(fault.faultDate), 'Priority', hasField('priority') ? (fault.priority || '—') : '—');
+  // Report is generated after final submit, so status is always COMPLETED
+  const displayStatus = 'COMPLETED';
+  if (hasField('workType')) kvTwo('Work Type', fault.workType || '—', 'Status', displayStatus);
+  else kv('Status', displayStatus);
   if (fault.title) kv('Title', fault.title);
-  if (fault.locationText) kv('Location', fault.locationText);
+  if (hasField('locationText') && fault.locationText) kv('Location', fault.locationText);
 
   // Scheduling
-  if (fault.timeAllocated || fault.plannedArrival || fault.plannedCompletion) {
+  if ((hasField('timeAllocated') && fault.timeAllocated) || (hasField('plannedArrival') && fault.plannedArrival) || (hasField('plannedCompletion') && fault.plannedCompletion)) {
+    divider();
     subHead('Scheduling');
-    if (fault.timeAllocated) kv('Time Allocated', fmtDateTime(fault.timeAllocated));
-    if (fault.plannedArrival) kv('Planned Arrival', fmtDateTime(fault.plannedArrival));
-    if (fault.plannedCompletion) kv('Planned Completion', fmtDateTime(fault.plannedCompletion));
+    if (hasField('timeAllocated') && fault.timeAllocated) kv('Time Allocated', fmtDateTime(fault.timeAllocated));
+    if (hasField('plannedArrival') && fault.plannedArrival) kv('Planned Arrival', fmtDateTime(fault.plannedArrival));
+    if (hasField('plannedCompletion') && fault.plannedCompletion) kv('Planned Completion', fmtDateTime(fault.plannedCompletion));
   }
 
   // ════════════════════════════════════════════════════════════
   // SCOPE OF WORKS
   // ════════════════════════════════════════════════════════════
 
-  if (fault.description) {
+  if (hasField('description') && fault.description) {
     sectionBar('Scope of Works');
     para(fault.description);
   }
 
   // ════════════════════════════════════════════════════════════
-  // OPERATIVE / CONTRACTOR
+  // PERSONNEL
   // ════════════════════════════════════════════════════════════
 
   sectionBar('Personnel');
   kvTwo('Operative', fault.assignedOperative?.name || '—', 'Admin', fault.admin.name);
-  if (fault.contractorCompany || fault.contractorName) {
+  const hasContractorFields = hasField('contractorCompany') || hasField('contractorName');
+  if (hasContractorFields && (fault.contractorCompany || fault.contractorName)) {
     divider();
     subHead('Contractor');
     if (fault.contractorCompany) kv('Company', fault.contractorCompany);
@@ -302,7 +383,8 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
   // ONSITE CONTACT
   // ════════════════════════════════════════════════════════════
 
-  if (fault.onsiteContactName || fault.onsiteContactPhone || fault.onsiteContactEmail) {
+  const hasOnsiteFields = hasField('onsiteContactName') || hasField('onsiteContactPhone') || hasField('onsiteContactEmail');
+  if (hasOnsiteFields && (fault.onsiteContactName || fault.onsiteContactPhone || fault.onsiteContactEmail)) {
     sectionBar('Onsite Contact');
     if (fault.onsiteContactName) kv('Name', fault.onsiteContactName);
     if (fault.onsiteContactPhone) kv('Phone', fault.onsiteContactPhone);
@@ -313,43 +395,90 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
   // VISIT REQUIREMENTS
   // ════════════════════════════════════════════════════════════
 
-  sectionBar('Visit Requirements');
-  const reqs: [string, boolean][] = [
-    ['Task Briefing', fault.visitTaskBriefing], ['LSR', fault.visitLsr],
-    ['Link Block', fault.visitLinkBlock], ['Safe Work Pack', fault.visitSafeWorkPack],
-    ['Possession', fault.visitPossession], ['Temp Works', fault.visitTempWorks],
-    ['Isolation', fault.visitIsolation], ['Track Access', fault.visitTrackAccess],
-    ['Temp Works Required', fault.visitTempWorksRequired], ['Working at Height', fault.visitWorkingAtHeight],
-  ];
-  const half = PW / 2;
-  for (let i = 0; i < reqs.length; i += 2) {
-    ensureSpace(17);
-    const y = doc.y;
-    if (Math.floor(i / 2) % 2 === 0) doc.rect(LM, y, PW, 16).fill(BG_LIGHT);
-    for (let c = 0; c < 2 && i + c < reqs.length; c++) {
-      const [label, on] = reqs[i + c];
-      const x = LM + c * half + 10;
-      const marker = on ? '\u2713' : '\u2717';
-      doc.fontSize(9).font('Helvetica-Bold').fillColor(on ? GREEN : RED).text(marker, x, y + 3);
-      doc.fontSize(9).font('Helvetica').fillColor(DARK).text(label, x + 14, y + 3);
+  const hasVisitFields = hasField('visitTaskBriefing');
+  if (hasVisitFields) {
+    sectionBar('Visit Requirements');
+    const reqs: [string, boolean][] = [
+      ['Task Briefing', fault.visitTaskBriefing], ['LSR', fault.visitLsr],
+      ['Link Block', fault.visitLinkBlock], ['Safe Work Pack', fault.visitSafeWorkPack],
+      ['Possession', fault.visitPossession], ['Temp Works', fault.visitTempWorks],
+      ['Isolation', fault.visitIsolation], ['Track Access', fault.visitTrackAccess],
+      ['Temp Works Required', fault.visitTempWorksRequired], ['Working at Height', fault.visitWorkingAtHeight],
+    ];
+    const half = PW / 2;
+    for (let i = 0; i < reqs.length; i += 2) {
+      ensureSpace(20);
+      const y = doc.y;
+      if (Math.floor(i / 2) % 2 === 0) doc.rect(LM, y, PW, 18).fill(BG_ALT);
+      for (let c = 0; c < 2 && i + c < reqs.length; c++) {
+        const [label, on] = reqs[i + c];
+        const x = LM + c * half + 12;
+        const marker = on ? '\u2713' : '\u2717';
+        doc.fontSize(10).font('Helvetica-Bold').fillColor(on ? GREEN : RED).text(marker, x, y + 3);
+        doc.fontSize(8.5).font('Helvetica').fillColor(DARK).text(label, x + 16, y + 4);
+      }
+      doc.y = y + 18;
     }
-    doc.y = y + 16;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // CUSTOM FIELDS (from form template)
+  // ════════════════════════════════════════════════════════════
+
+  const customData = fault.customFields as Record<string, unknown> | null;
+  if (templateSections && customData) {
+    for (const sec of templateSections) {
+      const customFields = sec.fields.filter(f => f.source === 'custom');
+      const filled = customFields.filter(f => {
+        const v = customData[f.key];
+        return v !== undefined && v !== null && v !== '';
+      });
+      if (filled.length > 0) {
+        subHead(sec.title);
+        for (const f of filled) {
+          const v = customData[f.key];
+          const display = Array.isArray(v) ? v.join(', ') : String(v);
+          kv(f.label, display);
+        }
+      }
+    }
   }
 
   // ════════════════════════════════════════════════════════════
   // DAILY WORK REPORTS
   // ════════════════════════════════════════════════════════════
 
-  for (const day of fault.workDays) {
-    sectionBar(`Day ${day.dayNumber} Report${day.isLocked ? '  \u2014  Completed' : ''}`);
+  const opSections = fault.formTemplate?.schema?.operativeSections as string[] | undefined;
+  const isEnabled = (key: string) => !opSections || opSections.includes(key);
 
-    // Attendance / GPS Events
-    if (day.events.length > 0) {
+  for (const day of fault.workDays) {
+    // Day header with completion status
+    const dayLabel = `Day ${day.dayNumber} — ${fmtDateShort(day.createdAt)}`;
+    sectionBar(dayLabel + (day.isLocked ? '  •  Completed' : ''));
+
+    // ── Attendance / GPS ──
+    if (isEnabled('gpsTracking') && day.events.length > 0) {
       subHead('Attendance & GPS Tracking');
+
+      // Summary line
+      const punchIn = day.events.find(e => e.eventType === 'PUNCH_IN');
+      const punchOut = day.events.find(e => e.eventType === 'PUNCH_OUT');
+      if (punchIn && punchOut) {
+        const totalTime = elapsed(punchIn.timestamp, punchOut.timestamp);
+        ensureSpace(20);
+        const sumY = doc.y;
+        doc.rect(LM, sumY, PW, 18).fill(BG_TOTAL);
+        doc.fontSize(8.5).font('Helvetica-Bold').fillColor(NAVY).text(
+          `Total on site: ${totalTime}  |  In: ${fmtTime(punchIn.timestamp)}  |  Out: ${fmtTime(punchOut.timestamp)}`,
+          LM + 8, sumY + 4, { width: PW - 16 }
+        );
+        doc.y = sumY + 22;
+      }
+
       const cols = [
-        { label: 'Event', w: PW * 0.24 }, { label: 'Time', w: PW * 0.14 },
+        { label: 'Event', w: PW * 0.22 }, { label: 'Time', w: PW * 0.14 },
         { label: 'Latitude', w: PW * 0.18 }, { label: 'Longitude', w: PW * 0.18 },
-        { label: 'Elapsed / Distance', w: PW * 0.26 },
+        { label: 'Elapsed / Distance', w: PW * 0.28 },
       ];
       tHead(cols);
       for (let i = 0; i < day.events.length; i++) {
@@ -357,70 +486,164 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
         let info = '';
         if (i > 0) {
           const p = day.events[i - 1];
-          info = `${elapsed(p.timestamp, e.timestamp)}  /  ${haversine(p.lat, p.lng, e.lat, e.lng).toFixed(1)} mi`;
+          info = `${elapsed(p.timestamp, e.timestamp)}  /  ${haversine(p.lat, p.lng, e.lat, e.lng).toFixed(2)} mi`;
         }
         tRow([
-          { val: e.eventType.replace(/_/g, ' '), w: PW * 0.24 },
-          { val: fmtTime(e.timestamp), w: PW * 0.14 },
-          { val: e.lat.toFixed(6), w: PW * 0.18 },
-          { val: e.lng.toFixed(6), w: PW * 0.18 },
-          { val: info, w: PW * 0.26 },
+          { val: e.eventType.replace(/_/g, ' '), w: cols[0].w, bold: true },
+          { val: fmtTime(e.timestamp), w: cols[1].w },
+          { val: e.lat.toFixed(6), w: cols[2].w },
+          { val: e.lng.toFixed(6), w: cols[3].w },
+          { val: info, w: cols[4].w },
         ], i % 2 === 1);
       }
     }
 
-    // Personnel
-    if (day.supervisorNames || day.tradespersonNames || day.operativeName) {
+    // ── Personnel ──
+    if (isEnabled('personnel') && (day.supervisorNames || day.tradespersonNames || day.operativeName)) {
       subHead('Personnel on Site');
       if (day.supervisorNames) kv('Supervisor(s)', day.supervisorNames);
       if (day.tradespersonNames) kv('Tradesperson(s)', day.tradespersonNames);
       if (day.operativeName) kv('Operative', day.operativeName);
     }
 
-    // Methodology
-    if (day.methodology) { subHead('Methodology'); para(day.methodology); }
+    // ── Methodology ──
+    if (isEnabled('methodology') && day.methodology) {
+      subHead('Methodology');
+      para(day.methodology);
+    }
 
-    // Works Description
-    if (day.worksDescription) { subHead('Works Description'); para(day.worksDescription); }
+    // ── Works Description ──
+    if (isEnabled('worksDescription') && day.worksDescription) {
+      subHead('Description of Completed Works');
+      para(day.worksDescription);
+    }
 
-    // Temp Works
+    // ── Temp Works ──
     const tw = day.tempWorks as { item: string; qty: number; unit?: string }[] | null;
-    if (tw && Array.isArray(tw) && tw.some(r => r.item)) {
-      subHead('Temp Works');
-      const cols = [{ label: 'Item', w: PW * 0.5 }, { label: 'Qty', w: PW * 0.25 }, { label: 'Unit', w: PW * 0.25 }];
+    if (isEnabled('tempWorks') && tw && Array.isArray(tw) && tw.some(r => r.item)) {
+      subHead('Temporary Works');
+      const cols = [
+        { label: 'Item', w: PW * 0.50 },
+        { label: 'Quantity', w: PW * 0.25, align: 'right' },
+        { label: 'Unit', w: PW * 0.25 },
+      ];
       tHead(cols);
-      tw.forEach((r, i) => { if (r.item) tRow([{ val: r.item, w: PW * 0.5 }, { val: String(r.qty), w: PW * 0.25 }, { val: r.unit || '', w: PW * 0.25 }], i % 2 === 1); });
+      tw.forEach((r, i) => {
+        if (r.item) tRow([
+          { val: r.item, w: cols[0].w },
+          { val: String(r.qty), w: cols[1].w, align: 'right' },
+          { val: r.unit || '', w: cols[2].w },
+        ], i % 2 === 1);
+      });
     }
 
-    // Materials Used
+    // ── Materials Used ──
     const mats = day.materialsUsed as { item: string; qty: number; unit?: string }[] | null;
-    if (mats && Array.isArray(mats) && mats.some(r => r.item)) {
+    if (isEnabled('materials') && mats && Array.isArray(mats) && mats.some(r => r.item)) {
       subHead('Materials Used');
-      const cols = [{ label: 'Item', w: PW * 0.5 }, { label: 'Qty', w: PW * 0.25 }, { label: 'Unit', w: PW * 0.25 }];
+      const cols = [
+        { label: 'Item', w: PW * 0.50 },
+        { label: 'Quantity', w: PW * 0.25, align: 'right' },
+        { label: 'Unit', w: PW * 0.25 },
+      ];
       tHead(cols);
-      mats.forEach((r, i) => { if (r.item) tRow([{ val: r.item, w: PW * 0.5 }, { val: String(r.qty), w: PW * 0.25 }, { val: r.unit || '', w: PW * 0.25 }], i % 2 === 1); });
+      mats.forEach((r, i) => {
+        if (r.item) tRow([
+          { val: r.item, w: cols[0].w },
+          { val: String(r.qty), w: cols[1].w, align: 'right' },
+          { val: r.unit || '', w: cols[2].w },
+        ], i % 2 === 1);
+      });
     }
 
-    // Dimensions
+    // ── Dimensions ──
     const dims = day.dimensions as { activity: string; qty: number; unit?: string }[] | null;
-    if (dims && Array.isArray(dims) && dims.some(r => r.activity)) {
+    if (isEnabled('dimensions') && dims && Array.isArray(dims) && dims.some(r => r.activity)) {
       subHead('Dimensions / Quantities');
-      const cols = [{ label: 'Activity', w: PW * 0.5 }, { label: 'Qty', w: PW * 0.25 }, { label: 'Unit', w: PW * 0.25 }];
+      const cols = [
+        { label: 'Activity', w: PW * 0.50 },
+        { label: 'Quantity', w: PW * 0.25, align: 'right' },
+        { label: 'Unit', w: PW * 0.25 },
+      ];
       tHead(cols);
-      dims.forEach((r, i) => { if (r.activity) tRow([{ val: r.activity, w: PW * 0.5 }, { val: String(r.qty), w: PW * 0.25 }, { val: r.unit || '', w: PW * 0.25 }], i % 2 === 1); });
+      dims.forEach((r, i) => {
+        if (r.activity) tRow([
+          { val: r.activity, w: cols[0].w },
+          { val: String(r.qty), w: cols[1].w, align: 'right' },
+          { val: r.unit || '', w: cols[2].w },
+        ], i % 2 === 1);
+      });
     }
 
-    // Further Work
-    if (day.furtherWork) {
+    // ── Further Work ──
+    if (isEnabled('furtherWork') && day.furtherWork) {
       subHead('Further Work Required');
-      if (day.furtherWorkNotes) para(day.furtherWorkNotes);
-      else para('Yes — no additional notes provided.');
+      // Highlight box
+      ensureSpace(24);
+      const fwY = doc.y;
+      const fwText = day.furtherWorkNotes || 'Yes — no additional notes provided.';
+      const fwH = Math.max(22, doc.fontSize(8.5).font('Helvetica').heightOfString(fwText, { width: PW - 32 }) + 14);
+      doc.rect(LM, fwY, PW, fwH).fill('#FFF7ED');
+      doc.rect(LM, fwY, 3, fwH).fill('#F59E0B');
+      doc.fontSize(8.5).font('Helvetica').fillColor('#92400E').text(fwText, LM + 12, fwY + 7, { width: PW - 32, lineGap: 2 });
+      doc.y = fwY + fwH + 4;
     }
 
-    // Day Photos
-    if (day.photos.length > 0) {
-      subHead(`Photos (${day.photos.length})`);
-      for (const p of day.photos) kv(`[${p.photoStage.toUpperCase()}]`, p.fileName || p.r2Key);
+    // ── Day Photos (embedded) ──
+    if (isEnabled('photos') && day.photos.length > 0) {
+      subHead(`Photographic Record (${day.photos.length})`);
+
+      for (const stage of ['before', 'during', 'after'] as const) {
+        const stagePhotos = day.photos.filter(p => p.photoStage === stage);
+        if (stagePhotos.length === 0) continue;
+
+        ensureSpace(20);
+        doc.fontSize(8).font('Helvetica-Bold').fillColor(MED).text(
+          `${stage.charAt(0).toUpperCase() + stage.slice(1)} (${stagePhotos.length})`,
+          LM + 8, doc.y, { width: PW - 16 }
+        );
+        doc.y += 14;
+
+        // Photo grid — 3 per row
+        const photoW = (PW - 24) / 3;
+        const photoH = 90;
+        let col = 0;
+        let rowY = doc.y;
+
+        for (const photo of stagePhotos) {
+          if (col === 0) {
+            ensureSpace(photoH + 20);
+            rowY = doc.y;
+          }
+          const x = LM + col * (photoW + 12);
+          const buf = await loadR2Photo(photo.r2Key);
+          if (buf) {
+            try {
+              doc.rect(x, rowY, photoW, photoH).lineWidth(0.5).strokeColor(RULE).stroke();
+              doc.image(buf, x + 1, rowY + 1, { width: photoW - 2, height: photoH - 2, fit: [photoW - 2, photoH - 2], align: 'center', valign: 'center' });
+            } catch {
+              // Fallback: show filename
+              doc.rect(x, rowY, photoW, photoH).fill(BG_ALT);
+              doc.fontSize(7).font('Helvetica').fillColor(LIGHT).text(photo.fileName || photo.r2Key, x + 4, rowY + photoH / 2 - 4, { width: photoW - 8, align: 'center' });
+            }
+          } else {
+            doc.rect(x, rowY, photoW, photoH).fill(BG_ALT);
+            doc.fontSize(7).font('Helvetica').fillColor(LIGHT).text(photo.fileName || 'Photo unavailable', x + 4, rowY + photoH / 2 - 4, { width: photoW - 8, align: 'center' });
+          }
+
+          // Caption
+          if (photo.fileName) {
+            doc.fontSize(6.5).font('Helvetica').fillColor(LIGHT).text(photo.fileName, x, rowY + photoH + 2, { width: photoW, align: 'center' });
+          }
+
+          col++;
+          if (col >= 3) {
+            col = 0;
+            doc.y = rowY + photoH + 16;
+          }
+        }
+        if (col > 0) doc.y = rowY + photoH + 16;
+      }
     }
   }
 
@@ -429,13 +652,81 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
   // ════════════════════════════════════════════════════════════
 
   const extraPhotos = fault.photos.filter(p => !p.workDayId);
-  if (extraPhotos.length > 0) {
-    sectionBar('Additional Photos');
-    for (const p of extraPhotos) kv(`[${p.photoStage.toUpperCase()}]`, p.fileName || p.r2Key);
+  if (isEnabled('photos') && extraPhotos.length > 0) {
+    sectionBar(`Additional Photos (${extraPhotos.length})`);
+
+    for (const stage of ['before', 'during', 'after'] as const) {
+      const stagePhotos = extraPhotos.filter(p => p.photoStage === stage);
+      if (stagePhotos.length === 0) continue;
+
+      ensureSpace(20);
+      doc.fontSize(8).font('Helvetica-Bold').fillColor(MED).text(
+        `${stage.charAt(0).toUpperCase() + stage.slice(1)} (${stagePhotos.length})`,
+        LM + 8, doc.y, { width: PW - 16 }
+      );
+      doc.y += 14;
+
+      const photoW = (PW - 24) / 3;
+      const photoH = 90;
+      let col = 0;
+      let rowY = doc.y;
+
+      for (const photo of stagePhotos) {
+        if (col === 0) {
+          ensureSpace(photoH + 20);
+          rowY = doc.y;
+        }
+        const x = LM + col * (photoW + 12);
+        const buf = await loadR2Photo(photo.r2Key);
+        if (buf) {
+          try {
+            doc.rect(x, rowY, photoW, photoH).lineWidth(0.5).strokeColor(RULE).stroke();
+            doc.image(buf, x + 1, rowY + 1, { width: photoW - 2, height: photoH - 2, fit: [photoW - 2, photoH - 2], align: 'center', valign: 'center' });
+          } catch {
+            doc.rect(x, rowY, photoW, photoH).fill(BG_ALT);
+            doc.fontSize(7).font('Helvetica').fillColor(LIGHT).text(photo.fileName || photo.r2Key, x + 4, rowY + photoH / 2 - 4, { width: photoW - 8, align: 'center' });
+          }
+        } else {
+          doc.rect(x, rowY, photoW, photoH).fill(BG_ALT);
+          doc.fontSize(7).font('Helvetica').fillColor(LIGHT).text(photo.fileName || 'Photo unavailable', x + 4, rowY + photoH / 2 - 4, { width: photoW - 8, align: 'center' });
+        }
+        col++;
+        if (col >= 3) {
+          col = 0;
+          doc.y = rowY + photoH + 16;
+        }
+      }
+      if (col > 0) doc.y = rowY + photoH + 16;
+    }
   }
 
   // ════════════════════════════════════════════════════════════
-  // PAGE FOOTERS — Company branding + page numbers
+  // SIGN-OFF / COMPLETION SUMMARY
+  // ════════════════════════════════════════════════════════════
+
+  if (fault.completedAt || fault.operativeSubmittedAt) {
+    ensureSpace(80);
+    doc.y += 8;
+    const boxY = doc.y;
+    doc.rect(LM, boxY, PW, 60).lineWidth(0.5).strokeColor(RULE).stroke();
+    doc.rect(LM, boxY, PW, 20).fill(BG_ALT);
+    doc.fontSize(7.5).font('Helvetica-Bold').fillColor(LIGHT).text('COMPLETION RECORD', LM + 10, boxY + 6, { characterSpacing: 0.5 });
+
+    let recY = boxY + 26;
+    if (fault.operativeSubmittedAt) {
+      doc.fontSize(8.5).font('Helvetica-Bold').fillColor(LIGHT).text('Operative Submitted', LM + 10, recY, { width: 130 });
+      doc.fontSize(8.5).font('Helvetica').fillColor(DARK).text(fmtDateTime(fault.operativeSubmittedAt), LM + 142, recY, { width: PW - 152 });
+      recY += 14;
+    }
+    if (fault.completedAt) {
+      doc.fontSize(8.5).font('Helvetica-Bold').fillColor(LIGHT).text('Approved', LM + 10, recY, { width: 130 });
+      doc.fontSize(8.5).font('Helvetica').fillColor(DARK).text(fmtDateTime(fault.completedAt), LM + 142, recY, { width: PW - 152 });
+    }
+    doc.y = boxY + 68;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // PAGE FOOTERS (retroactive across all pages)
   // ════════════════════════════════════════════════════════════
 
   const now = fmtDateTime(new Date());
@@ -444,51 +735,48 @@ export async function generateFaultPdf(fault: FaultWithRelations): Promise<strin
   for (let i = 0; i < pages; i++) {
     doc.switchToPage(i);
 
-    // Top accent bar on all pages after first
+    // Top accent bar on continuation pages
     if (i > 0) doc.rect(0, 0, doc.page.width, 5).fill(NAVY);
 
-    const fy = doc.page.height - 58;
+    const fy = doc.page.height - 52;
 
-    // Separator line
+    // Footer line
     doc.moveTo(LM, fy).lineTo(LM + PW, fy).lineWidth(0.5).strokeColor(NAVY).stroke();
 
-    // Left column: company details
+    // Left: company info
     let footY = fy + 5;
-    doc.fontSize(7).font('Helvetica-Bold').fillColor(NAVY).text(company.name, LM, footY, { width: PW * 0.6 });
+    doc.fontSize(7).font('Helvetica-Bold').fillColor(NAVY).text(company.name, LM, footY, { width: PW * 0.55 });
     footY += 9;
     const footerBits: string[] = [];
     if (company.address) footerBits.push(company.address);
     if (company.phone) footerBits.push(company.phone);
     if (footerBits.length) {
-      doc.fontSize(6.5).font('Helvetica').fillColor(LIGHT).text(footerBits.join('  |  '), LM, footY, { width: PW * 0.6 });
+      doc.fontSize(6.5).font('Helvetica').fillColor(LIGHT).text(footerBits.join('  |  '), LM, footY, { width: PW * 0.55 });
       footY += 8;
     }
     const footerBits2: string[] = [];
     if (company.email) footerBits2.push(company.email);
     if (company.website) footerBits2.push(company.website);
-    if (company.abn) footerBits2.push(`ABN: ${company.abn}`);
+    if (company.abn) footerBits2.push(`Reg: ${company.abn}`);
     if (footerBits2.length) {
-      doc.fontSize(6.5).font('Helvetica').fillColor(LIGHT).text(footerBits2.join('  |  '), LM, footY, { width: PW * 0.6 });
+      doc.fontSize(6.5).font('Helvetica').fillColor(LIGHT).text(footerBits2.join('  |  '), LM, footY, { width: PW * 0.55 });
     }
 
-    // Right column: page number, date, Powered by Infrava
-    doc.fontSize(7).font('Helvetica').fillColor(LIGHT).text(
+    // Right: page number + date + branding
+    doc.fontSize(7.5).font('Helvetica-Bold').fillColor(NAVY).text(
       `Page ${i + 1} of ${pages}`,
       LM, fy + 5, { width: PW, align: 'right' }
     );
     doc.fontSize(6.5).font('Helvetica').fillColor(LIGHT).text(
       `Generated: ${now}`,
-      LM, fy + 14, { width: PW, align: 'right' }
+      LM, fy + 15, { width: PW, align: 'right' }
     );
-    doc.fontSize(6.5).font('Helvetica-Bold').fillColor(NAVY).text(
+    doc.fontSize(6).font('Helvetica').fillColor(LIGHT).text(
       'Powered by Infrava',
-      LM, fy + 23, { width: PW, align: 'right' }
+      LM, fy + 24, { width: PW, align: 'right' }
     );
   }
 
   doc.end();
-  const buffer = await new Promise<Buffer>((resolve) => { doc.on('end', () => resolve(Buffer.concat(chunks))); });
-  const r2Key = `reports/${fault.adminId}/${fault.projectRef}.pdf`;
-  await uploadFile(r2Key, buffer);
-  return r2Key;
+  return new Promise<Buffer>((resolve) => { doc.on('end', () => resolve(Buffer.concat(chunks))); });
 }

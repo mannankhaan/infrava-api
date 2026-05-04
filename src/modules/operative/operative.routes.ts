@@ -11,6 +11,9 @@ const router = Router();
 // All routes require OPERATIVE role
 router.use(authMiddleware, requireRoles([UserRole.OPERATIVE]));
 
+// Clients (distinct clients from assigned faults)
+router.get('/clients', ctrl.listClients);
+
 // Faults
 router.get('/faults', ctrl.listFaults);
 router.get('/faults/:id', ctrl.getFault);
